@@ -6,8 +6,8 @@
     "examples/*"
   ],
   "scripts": {
-    "build": "npm run build -w @valv/core && npm run build -w @valv/prisma && npm run build -w @valv/clickhouse && npm run build -w @valv/postgres && npm run build -w @valv/mysql && npm run build -w @valv/mcp-sdk && npm run build -w @valv/mcp",
-    "typecheck": "tsc --noEmit -p packages/core && tsc --noEmit -p packages/prisma && tsc --noEmit -p packages/clickhouse && tsc --noEmit -p packages/postgres && tsc --noEmit -p packages/mysql && tsc --noEmit -p packages/mcp-sdk && tsc --noEmit -p packages/mcp && tsc --noEmit -p tests",
+    "build": "npm run build -w @valv/core && npm run build -w @valv/prisma && npm run build -w @valv/clickhouse && npm run build -w @valv/postgres && npm run build -w @valv/mysql && npm run build -w @valv/sqlite && npm run build -w @valv/mcp-sdk && npm run build -w @valv/mcp",
+    "typecheck": "tsc --noEmit -p packages/core && tsc --noEmit -p packages/prisma && tsc --noEmit -p packages/clickhouse && tsc --noEmit -p packages/postgres && tsc --noEmit -p packages/mysql && tsc --noEmit -p packages/sqlite && tsc --noEmit -p packages/mcp-sdk && tsc --noEmit -p packages/mcp && tsc --noEmit -p tests",
     "test": "vitest run",
     "test:watch": "vitest",
     "bump": "node scripts/version.mjs",

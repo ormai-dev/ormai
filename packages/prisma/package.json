@@ -1,6 +1,6 @@
 {
   "name": "@valv/prisma",
-  "version": "0.8.0",
+  "version": "0.9.1",
   "description": "Prisma adapter for valv — row-level security and access control for AI agents",
   "keywords": [
     "prisma",
@@ -21,7 +21,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vistal-dev/vistal.git",
+    "url": "https://github.com/valv-dev/valv.git",
     "directory": "packages/prisma"
   },
   "main": "dist/index.js",
@@ -44,7 +44,7 @@
   },
   "peerDependencies": {
     "@prisma/client": "^5.0.0",
-    "@valv/core": "^0.8.1",
+    "@valv/core": "^0.10.0",
     "pg": "^8.0.0",
     "prisma": "^5.0.0"
   },

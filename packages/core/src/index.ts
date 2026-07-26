@@ -37,7 +37,7 @@ export type {
 } from "./ast"
 export { emit, emitInsert, emitUpdate, emitDelete } from "./emit"
 export type { Dialect } from "./dialect"
-export { postgresDialect, mysqlDialect } from "./dialects"
+export { postgresDialect, mysqlDialect, sqliteDialect } from "./dialects"
 export { BASE_FUNCTIONS } from "./functions"
 export type { FnDef, ArgSpec, FnReturn } from "./functions"
 export { resultSchema } from "./result-schema"

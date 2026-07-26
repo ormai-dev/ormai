@@ -1,6 +1,6 @@
 {
   "name": "@valv/mysql",
-  "version": "0.2.1",
+  "version": "0.3.1",
   "description": "MySQL adapter for valv — row-level security and access control for AI agents, over a runtime connection",
   "keywords": [
     "mysql",
@@ -18,7 +18,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vistal-dev/vistal.git",
+    "url": "https://github.com/valv-dev/valv.git",
     "directory": "packages/mysql"
   },
   "main": "dist/index.js",
@@ -37,7 +37,7 @@
     "build": "tsc"
   },
   "peerDependencies": {
-    "@valv/core": "^0.8.1",
+    "@valv/core": "^0.10.0",
     "mysql2": "^3.0.0"
   },
   "publishConfig": {

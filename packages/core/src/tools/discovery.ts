@@ -68,7 +68,13 @@ function score(q: string, v: VisibleResource): number {
 export interface ResourceDetail {
   name: string
   description?: string
-  fields: { name: string; type: string; nullable: boolean; enumValues?: string[] }[]
+  fields: {
+    name: string
+    type: string
+    nullable: boolean
+    description?: string
+    enumValues?: string[]
+  }[]
   relations: { name: string; target: string; type: string }[]
 }
 
@@ -85,6 +91,11 @@ export function describeResource(v: VisibleResource, visibleNames: Set<string>):
         name: f.name,
         type: f.type,
         nullable: f.isNullable,
+        // A catalog author's note about what the column actually means — units,
+        // what NULL signifies, which values are worth grouping by. Without this
+        // the model sees only a name and a coarse type, which is rarely enough
+        // to pick the right column on a schema it has never seen.
+        ...(f.description ? { description: f.description } : {}),
         // Enum columns advertise their valid values so the model filters/writes
         // with a real one instead of guessing.
         ...(f.type === "enum" && f.enumValues ? { enumValues: f.enumValues } : {}),

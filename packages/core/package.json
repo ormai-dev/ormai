@@ -1,6 +1,6 @@
 {
   "name": "@valv/core",
-  "version": "0.8.2",
+  "version": "0.10.0",
   "description": "ORM + Access Control Layer for AI Agents",
   "keywords": [
     "ai agent",
@@ -20,7 +20,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vistal-dev/vistal.git",
+    "url": "https://github.com/valv-dev/valv.git",
     "directory": "packages/core"
   },
   "main": "dist/index.js",

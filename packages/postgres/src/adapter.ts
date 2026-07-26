@@ -1,6 +1,7 @@
 import type { ValvAdapter, SchemaMap, Query, CompiledQuery, FnDef } from "@valv/core"
 import { emit, BASE_FUNCTIONS, postgresDialect, ValidationError } from "@valv/core"
-import { introspectPostgres, type PostgresSql } from "./introspection"
+import { introspectWithDriver } from "./introspection"
+import { toDriver, type Driver, type PostgresClient } from "./driver"
 
 export interface PostgresAdapterOptions {
   /** Declare the schema by hand instead of querying information_schema. */
@@ -37,11 +38,19 @@ function isStatementTimeout(err: unknown): boolean {
 // emit{Insert,Update,Delete} over the same driver, when a real need appears.
 export class PostgresAdapter implements ValvAdapter {
   private schemaCache: SchemaMap | null = null
+  private driverCache: Driver | null = null
 
   constructor(
-    private sql: PostgresSql,
+    private client: PostgresClient,
     private options: PostgresAdapterOptions = {},
   ) {}
+
+  // Resolved on first use, not in the constructor: `compile()` needs only the
+  // dialect, so an adapter built purely to compile SQL (or one given a
+  // hand-declared schema) never has to hold a usable client.
+  private get driver(): Driver {
+    return (this.driverCache ??= toDriver(this.client))
+  }
 
   private get timeoutMs(): number {
     return this.options.statementTimeoutMs ?? DEFAULT_STATEMENT_TIMEOUT_MS
@@ -49,7 +58,7 @@ export class PostgresAdapter implements ValvAdapter {
 
   async introspect(): Promise<SchemaMap> {
     this.schemaCache ??=
-      this.options.schema ?? (await introspectPostgres(this.sql, this.options.namespace))
+      this.options.schema ?? (await introspectWithDriver(this.driver, this.options.namespace))
     return this.schemaCache
   }
 
@@ -76,20 +85,22 @@ export class PostgresAdapter implements ValvAdapter {
   }
 
   private runInTx(sql: string, parameters: unknown[]): Promise<unknown[]> {
-    return this.sql.begin(async (tx) => {
-      // SET LOCAL scopes both settings to this transaction. The timeout is a
-      // numeric config value and the zone is a literal — neither is model input,
-      // and a number can't carry SQL, so inlining them is safe.
-      await tx.unsafe(`SET LOCAL statement_timeout = ${this.timeoutMs}`)
-      // Pin the session to UTC so date_trunc (and any other tz-sensitive
-      // operator) on a `timestamptz` truncates to UTC boundaries instead of the
-      // server's local zone. Without this, dateTrunc buckets shift by the
-      // server's offset and, worse, depend on where the query runs —
-      // monthly/daily grouping would land on the wrong day. UTC also makes the
-      // serialized ISO output stable across environments.
-      await tx.unsafe(`SET LOCAL TIME ZONE 'UTC'`)
-      const rows = await tx.unsafe(sql, parameters)
-      return rows as unknown[]
-    })
+    // SET LOCAL scopes both settings to the driver's transaction. The timeout is
+    // a numeric config value and the zone is a literal — neither is model input,
+    // and a number can't carry SQL, so inlining them is safe.
+    return this.driver.queryScoped(
+      [
+        `SET LOCAL statement_timeout = ${this.timeoutMs}`,
+        // Pin the session to UTC so date_trunc (and any other tz-sensitive
+        // operator) on a `timestamptz` truncates to UTC boundaries instead of the
+        // server's local zone. Without this, dateTrunc buckets shift by the
+        // server's offset and, worse, depend on where the query runs —
+        // monthly/daily grouping would land on the wrong day. UTC also makes the
+        // serialized ISO output stable across environments.
+        `SET LOCAL TIME ZONE 'UTC'`,
+      ],
+      sql,
+      parameters,
+    )
   }
 }

@@ -9,6 +9,7 @@ export default defineConfig({
       "@valv/clickhouse": path.resolve(__dirname, "packages/clickhouse/src/index.ts"),
       "@valv/postgres": path.resolve(__dirname, "packages/postgres/src/index.ts"),
       "@valv/mysql": path.resolve(__dirname, "packages/mysql/src/index.ts"),
+      "@valv/sqlite": path.resolve(__dirname, "packages/sqlite/src/index.ts"),
     },
   },
 })

@@ -1,10 +1,11 @@
 import type { Dialect } from "./dialect"
 import type { FnDef } from "./functions"
 
-// Standard SQL dialects that ship with core. Postgres and MySQL live here
-// (rather than in an adapter) because more than one adapter targets each — the
-// driver-based @valv/postgres and @valv/mysql, plus the Prisma adapter's
-// postgres/mysql providers — so a single definition per dialect avoids drift.
+// Standard SQL dialects that ship with core. Postgres, MySQL and SQLite live
+// here (rather than in an adapter) because more than one adapter targets each —
+// the driver-based @valv/postgres, @valv/mysql and @valv/sqlite, plus the Prisma
+// adapter's postgres/mysql/sqlite providers — so a single definition per dialect
+// avoids drift.
 
 const doubleQuote = (id: string): string => '"' + id.replace(/"/g, '""') + '"'
 const backtick = (id: string): string => "`" + id.replace(/`/g, "``") + "`"
@@ -59,4 +60,40 @@ export const mysqlDialect: Dialect = {
   placeholder: () => "?",
   functions: { dateTrunc: dateTruncMysql },
   ilike: "LIKE", // MySQL has no ILIKE; its LIKE is case-insensitive by collation.
+}
+
+// SQLite truncates with strftime, zeroing the components below the chosen grain.
+// Note strftime spells minutes %M (MySQL's DATE_FORMAT spells them %i), so this
+// map can't be shared with DATE_FORMAT above despite looking nearly identical.
+//
+// strftime reads a timestamp as ISO-8601 text or a Julian day number, and always
+// computes in UTC — so unlike Postgres and MySQL there is no session zone for the
+// adapter to pin. SQLite has no date type, though: a column declared DATE /
+// DATETIME / TIMESTAMP (what introspection maps to `date`) holds whatever the
+// writer put there. Unix-epoch integers are the common exception and strftime
+// reads them as Julian days, silently bucketing to the wrong era rather than
+// erroring. Declare such columns as `number` and bucket them arithmetically.
+const STRFTIME_FORMAT: Record<(typeof TRUNC_UNITS)[number], string> = {
+  minute: "%Y-%m-%d %H:%M:00",
+  hour: "%Y-%m-%d %H:00:00",
+  day: "%Y-%m-%d",
+  month: "%Y-%m-01",
+  year: "%Y-01-01",
+}
+const dateTruncSqlite: FnDef = {
+  args: [{ kind: "column" }, { kind: "enum", values: TRUNC_UNITS }],
+  returns: "date",
+  render: ([c, unit]) =>
+    `strftime('${STRFTIME_FORMAT[unit as (typeof TRUNC_UNITS)[number]]}', ${c})`,
+}
+
+// SQLite: "id" double-quote quoting (the SQL standard spelling, which SQLite
+// accepts alongside its backtick and bracket variants), ? positional
+// placeholders (type ignored — SQLite binds positionally).
+export const sqliteDialect: Dialect = {
+  quoteId: doubleQuote,
+  placeholder: () => "?",
+  functions: { dateTrunc: dateTruncSqlite },
+  // SQLite has no ILIKE; its LIKE is already case-insensitive for ASCII.
+  ilike: "LIKE",
 }

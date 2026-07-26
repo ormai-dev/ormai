@@ -1,12 +1,5 @@
 import type { SchemaMap, ResourceSchema, FieldSchema, FieldType, RelationSchema } from "@valv/core"
-
-// The structural slice of a postgres.js `Sql` client this adapter needs. Kept to
-// `unsafe` + `begin` so the package never imports the driver — the consumer
-// passes their own client (and owns its connection lifecycle and credentials).
-export interface PostgresSql {
-  unsafe(query: string, parameters?: unknown[]): PromiseLike<unknown[]>
-  begin<T>(callback: (sql: PostgresSql) => Promise<T>): Promise<T>
-}
+import { toDriver, type Driver, type PostgresClient } from "./driver"
 
 interface ColumnRow {
   table_name: string
@@ -36,12 +29,25 @@ interface FkRow {
 // assume table names are unique within the introspected namespace. `namespace` is
 // a trusted config value (never user input), so inlining it into the SQL adds no
 // injection surface — same as the old hardcoded constant.
-export async function introspectPostgres(
-  sql: PostgresSql,
+export function introspectPostgres(
+  client: PostgresClient,
+  namespace = "public",
+): Promise<SchemaMap> {
+  return introspectWithDriver(toDriver(client), namespace)
+}
+
+/**
+ * The same introspection against an already-normalised driver, so the adapter
+ * doesn't re-derive one per call. Introspection reads the catalog and needs none
+ * of the session scoping the adapter applies to model-driven queries, so every
+ * statement here goes through plain `query`.
+ */
+export async function introspectWithDriver(
+  driver: Driver,
   namespace = "public",
 ): Promise<SchemaMap> {
   const [columns, pks, fks] = await Promise.all([
-    sql.unsafe(`
+    driver.query(`
       select c.table_name, c.column_name, c.data_type, c.is_nullable,
              (c.column_default is not null) as has_default
       from information_schema.columns c
@@ -55,7 +61,7 @@ export async function introspectPostgres(
     // requires ownership or a non-SELECT privilege), and valv connections are
     // read-only by design — so PKs would silently vanish. pg_catalog is readable
     // by any role, so keys resolve regardless of grants.
-    sql.unsafe(`
+    driver.query(`
       select c.relname as table_name, a.attname as column_name
       from pg_constraint con
       join pg_class c on c.oid = con.conrelid
@@ -68,7 +74,7 @@ export async function introspectPostgres(
     // Foreign keys from pg_catalog for the same reason. unnest with ordinality
     // over both key arrays at once keeps local and referenced columns paired in
     // order, so composite FKs group correctly.
-    sql.unsafe(`
+    driver.query(`
       select c.relname as table_name, a.attname as column_name, con.conname as constraint_name,
              fc.relname as foreign_table_name, fa.attname as foreign_column_name
       from pg_constraint con

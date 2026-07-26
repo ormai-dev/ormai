@@ -1,6 +1,6 @@
 {
   "name": "@valv/clickhouse",
-  "version": "0.7.1",
+  "version": "0.8.1",
   "description": "ClickHouse adapter for valv — row-level security and access control for AI agents",
   "keywords": [
     "clickhouse",
@@ -20,7 +20,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vistal-dev/vistal.git",
+    "url": "https://github.com/valv-dev/valv.git",
     "directory": "packages/clickhouse"
   },
   "main": "dist/index.js",
@@ -40,7 +40,7 @@
   },
   "peerDependencies": {
     "@clickhouse/client": "^1.0.0",
-    "@valv/core": "^0.8.1"
+    "@valv/core": "^0.10.0"
   },
   "publishConfig": {
     "access": "public"
