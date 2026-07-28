@@ -1,6 +1,7 @@
 {
   "name": "@valv/mcp",
-  "version": "0.6.1",
+  "version": "0.6.2",
+  "mcpName": "sh.valv/mcp",
   "description": "Zero-config MCP server for any database — point it at a DATABASE_URL and let coding agents (Claude Code) query it safely, no SQL and no code",
   "keywords": [
     "mcp",

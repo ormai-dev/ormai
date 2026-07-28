@@ -1,0 +1,68 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "sh.valv/mcp",
+  "title": "valv",
+  "description": "Let coding agents query any SQL database safely. Read-only by default and scoped by your policies.",
+  "version": "0.6.2",
+  "websiteUrl": "https://valv.sh",
+  "repository": {
+    "url": "https://github.com/valv-dev/valv",
+    "source": "github",
+    "subfolder": "packages/mcp"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@valv/mcp",
+      "version": "0.6.2",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "DATABASE_URL",
+          "description": "Database connection string. PostgreSQL, MySQL, SQLite, CockroachDB, or a ClickHouse HTTP URL.",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "VALV_PROVIDER",
+          "description": "Datasource provider: postgresql, mysql, sqlite, or clickhouse. Inferred from DATABASE_URL when omitted.",
+          "format": "string",
+          "choices": ["postgresql", "mysql", "sqlite", "clickhouse"]
+        },
+        {
+          "name": "VALV_DATABASE",
+          "description": "Database name. Required for ClickHouse, whose URL does not carry one.",
+          "format": "string"
+        },
+        {
+          "name": "VALV_TABLES",
+          "description": "Comma-separated allow-list of tables. When set, only these are exposed to the agent.",
+          "format": "string"
+        },
+        {
+          "name": "VALV_EXCLUDE",
+          "description": "Comma-separated deny-list of tables, applied after the allow-list.",
+          "format": "string"
+        },
+        {
+          "name": "VALV_POLICY_FILE",
+          "description": "Path to a policy module that takes full control of access. Without it, the server is read-only across all tables.",
+          "format": "filepath"
+        },
+        {
+          "name": "VALV_CONTEXT",
+          "description": "JSON context object the policy reads, e.g. {\"tenant\":{\"id\":\"acme\"}}.",
+          "format": "string"
+        },
+        {
+          "name": "VALV_HTTP_PORT",
+          "description": "Serve over Streamable HTTP on this port instead of stdio.",
+          "format": "number"
+        }
+      ]
+    }
+  ]
+}
