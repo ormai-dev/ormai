@@ -45,6 +45,10 @@ export interface ValvConfig<TContext = DefaultContext, TResources extends string
   resolvePolicy?: (resource: TResources, ctx: TContext) => PolicyResult
   /** Called after every run, successful or not. */
   onQuery?: (event: QueryEvent<TContext, TResources>) => void
+  /** Throw the original error (driver, Zod, …) instead of masking it behind a
+   *  generic message. Off by default — only enable for a trusted caller (e.g. a
+   *  local owner tool) where leaking internal error detail is acceptable. */
+  exposeErrors?: boolean
 }
 
 export interface QueryEvent<TContext, TResources extends string = string> {
@@ -88,6 +92,7 @@ export class Valv<TContext = DefaultContext, TResources extends string = string>
   private strictPolicyKeys: boolean
   private resolvePolicyFn?: (resource: TResources, ctx: TContext) => PolicyResult
   private onQueryFn?: (event: QueryEvent<TContext, TResources>) => void
+  private exposeErrors: boolean
 
   constructor(config: ValvConfig<TContext, TResources>) {
     this.adapter = config.adapter
@@ -95,6 +100,7 @@ export class Valv<TContext = DefaultContext, TResources extends string = string>
     this.strictPolicyKeys = config.strictPolicyKeys ?? false
     this.resolvePolicyFn = config.resolvePolicy
     this.onQueryFn = config.onQuery
+    this.exposeErrors = config.exposeErrors ?? false
   }
 
   /** Register an access policy for a resource. Use "*" as a wildcard fallback. */
@@ -119,9 +125,10 @@ export class Valv<TContext = DefaultContext, TResources extends string = string>
     } catch (e) {
       // Surface valv's own (safe, actionable) errors; replace anything else —
       // Zod, RangeError, raw driver errors — with a generic message so internal
-      // details never reach the caller. The original is kept for onQuery.
+      // details never reach the caller (unless exposeErrors opts into the raw
+      // error). The original is kept for onQuery.
       error = e as Error
-      throw toSafeError(error)
+      throw this.exposeErrors ? error : toSafeError(error)
     } finally {
       this.onQueryFn?.({
         toolName: "query",
@@ -157,7 +164,7 @@ export class Valv<TContext = DefaultContext, TResources extends string = string>
       return await this.executeWrite(op, input, ctx)
     } catch (e) {
       error = e as Error
-      throw toSafeError(error)
+      throw this.exposeErrors ? error : toSafeError(error)
     } finally {
       this.onQueryFn?.({
         toolName: op,

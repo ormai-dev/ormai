@@ -1,6 +1,6 @@
 {
   "name": "@valv/core",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "ORM + Access Control Layer for AI Agents",
   "keywords": [
     "ai agent",
