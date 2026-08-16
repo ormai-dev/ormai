@@ -72,6 +72,8 @@ export interface QueryInput {
   take?: number
   /** Alias for `take`. */
   limit?: number
+  /** Rows to skip before the first returned row, for pagination. */
+  skip?: number
 }
 
 export interface InsertInput {
@@ -109,7 +111,7 @@ const AND = "AND"
 const OR = "OR"
 const NOT = "NOT"
 
-const QUERY_KEYS = new Set(["from", "where", "select", "groupBy", "orderBy", "take", "limit"])
+const QUERY_KEYS = new Set(["from", "where", "select", "groupBy", "orderBy", "take", "limit", "skip"])
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v)
@@ -473,7 +475,7 @@ export function parseQuery(input: unknown, functions: Record<string, FnDef>): Qu
   const unknownKey = Object.keys(input).find((k) => !QUERY_KEYS.has(k))
   if (unknownKey) {
     throw new ValidationError(
-      `Unknown query key "${unknownKey}". Use from, select, where, groupBy, orderBy, take.`,
+      `Unknown query key "${unknownKey}". Use from, select, where, groupBy, orderBy, take, skip.`,
     )
   }
   const query: Query = {
@@ -490,6 +492,12 @@ export function parseQuery(input: unknown, functions: Record<string, FnDef>): Qu
       throw new ValidationError("`take` must be a positive integer.")
     }
     query.limit = take
+  }
+  if (input.skip !== undefined) {
+    if (typeof input.skip !== "number" || !Number.isInteger(input.skip) || input.skip < 0) {
+      throw new ValidationError("`skip` must be a non-negative integer.")
+    }
+    if (input.skip > 0) query.offset = input.skip
   }
   return query
 }

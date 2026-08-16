@@ -102,6 +102,7 @@ export function emit(
       .join(", ")}`
   }
   if (query.limit !== undefined) sql += ` LIMIT ${Math.trunc(query.limit)}`
+  if (query.offset !== undefined) sql += ` OFFSET ${Math.trunc(query.offset)}`
 
   return { sql, params: ctx.params }
 }

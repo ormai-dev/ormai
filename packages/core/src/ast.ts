@@ -46,6 +46,7 @@ export interface Query {
   groupBy?: GroupByItem[]
   orderBy?: OrderBy[]
   limit?: number
+  offset?: number
 }
 
 // ── Mutations ────────────────────────────────────────────────────────────────
