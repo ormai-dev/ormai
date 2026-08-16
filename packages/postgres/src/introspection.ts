@@ -3,6 +3,7 @@ import { toDriver, type Driver, type PostgresClient } from "./driver"
 
 interface ColumnRow {
   table_name: string
+  table_type: string // 'BASE TABLE' | 'VIEW' | 'MATERIALIZED VIEW'
   column_name: string
   data_type: string
   is_nullable: string
@@ -46,15 +47,30 @@ export async function introspectWithDriver(
   driver: Driver,
   namespace = "public",
 ): Promise<SchemaMap> {
-  const [columns, pks, fks] = await Promise.all([
+  const [columns, matviewColumns, pks, fks] = await Promise.all([
+    // Base tables and plain views come from information_schema, whose data_type
+    // is already the clean cross-dialect name mapPgType expects.
     driver.query(`
-      select c.table_name, c.column_name, c.data_type, c.is_nullable,
+      select c.table_name, t.table_type, c.column_name, c.data_type, c.is_nullable,
              (c.column_default is not null) as has_default
       from information_schema.columns c
       join information_schema.tables t
         on t.table_schema = c.table_schema and t.table_name = c.table_name
-      where t.table_type = 'BASE TABLE' and c.table_schema = '${namespace}'
+      where t.table_type in ('BASE TABLE', 'VIEW') and c.table_schema = '${namespace}'
       order by c.table_name, c.ordinal_position
+    `) as Promise<ColumnRow[]>,
+    // Materialized views aren't in information_schema, so read their columns from
+    // pg_catalog. format_type carries length/precision — mapPgType strips it.
+    driver.query(`
+      select c.relname as table_name, 'MATERIALIZED VIEW' as table_type,
+             a.attname as column_name, format_type(a.atttypid, a.atttypmod) as data_type,
+             case when a.attnotnull then 'NO' else 'YES' end as is_nullable,
+             a.atthasdef as has_default
+      from pg_class c
+      join pg_namespace n on n.oid = c.relnamespace
+      join pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped
+      where c.relkind = 'm' and n.nspname = '${namespace}'
+      order by c.relname, a.attnum
     `) as Promise<ColumnRow[]>,
     // Primary keys from pg_catalog, not information_schema.table_constraints:
     // that view is empty for a SELECT-only role that doesn't own the table (it
@@ -115,8 +131,11 @@ export async function introspectWithDriver(
     fkByConstraint.set(r.constraint_name, entry)
   }
 
+  // Views and materialized views are readable but not writable.
+  const readOnly = new Set<string>()
   const columnsByTable = new Map<string, ColumnRow[]>()
-  for (const r of columns) {
+  for (const r of [...columns, ...matviewColumns]) {
+    if (r.table_type !== "BASE TABLE") readOnly.add(r.table_name)
     const list = columnsByTable.get(r.table_name) ?? []
     list.push(r)
     columnsByTable.set(r.table_name, list)
@@ -126,6 +145,7 @@ export async function introspectWithDriver(
   for (const [tableName, cols] of columnsByTable) {
     const pkCols = pkByTable.get(tableName) ?? []
     // Prefer a column literally named "id", else the sole primary key column.
+    // Views/matviews carry no PK constraint, so they simply have no id column.
     const idCol = cols.find((c) => c.column_name === "id")?.column_name ?? pkCols[0]
 
     const fields: Record<string, FieldSchema> = {}
@@ -143,7 +163,13 @@ export async function introspectWithDriver(
       }
     }
 
-    resources[tableName] = { name: tableName, tableName, fields, relations: {} }
+    resources[tableName] = {
+      name: tableName,
+      tableName,
+      fields,
+      relations: {},
+      ...(readOnly.has(tableName) ? { readOnly: true } : {}),
+    }
   }
 
   addRelations(resources, fkByConstraint)
@@ -208,7 +234,10 @@ function pluralize(name: string): string {
 // types (composite, geometry, and — for now — enums, which surface as
 // USER-DEFINED without their values here) fall through to "string".
 function mapPgType(dataType: string): FieldType | null {
-  const t = dataType.toLowerCase()
+  // information_schema gives a bare name ("numeric"); pg_catalog's format_type
+  // adds length/precision ("numeric(10,2)", "character varying(255)"). Strip the
+  // parenthesized part so both classify the same.
+  const t = dataType.toLowerCase().replace(/\(.*$/, "").trim()
   if (
     [
       "smallint",

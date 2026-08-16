@@ -68,6 +68,7 @@ function score(q: string, v: VisibleResource): number {
 export interface ResourceDetail {
   name: string
   description?: string
+  readOnly?: boolean
   fields: {
     name: string
     type: string
@@ -85,6 +86,8 @@ export function describeResource(v: VisibleResource, visibleNames: Set<string>):
   return {
     name: resource.name,
     description: resource.description,
+    // Signals to the model that this is a view — queryable, but not writable.
+    ...(resource.readOnly ? { readOnly: true } : {}),
     fields: Object.values(resource.fields)
       .filter((f) => allowedFields.has(f.name))
       .map((f) => ({

@@ -76,6 +76,8 @@ export interface ResourceDescriptor {
   fields: ResourceField[]
   relations: ResourceRelation[]
   policyStub: string
+  /** True for a view or materialized view — readable, not writable. */
+  readOnly: boolean
 }
 
 export class Valv<TContext = DefaultContext, TResources extends string = string> {
@@ -450,6 +452,7 @@ export class Valv<TContext = DefaultContext, TResources extends string = string>
         type: rel.type,
       })),
       policyStub: buildPolicyStub(r.name),
+      readOnly: r.readOnly ?? false,
     }))
   }
 

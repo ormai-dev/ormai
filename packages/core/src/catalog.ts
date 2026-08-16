@@ -11,6 +11,10 @@ export interface ResourceSchema {
   fields: Record<string, FieldSchema>
   relations: Record<string, RelationSchema>
   description?: string
+  // A relation that can be read but not written — a database view or
+  // materialized view. Reads validate and emit like any resource; writes are
+  // rejected up front (a view has no single writable table behind it).
+  readOnly?: boolean
 }
 
 export type FieldType = "string" | "number" | "boolean" | "date" | "enum" | "uuid" | "json"

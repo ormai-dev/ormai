@@ -76,6 +76,11 @@ export function validateMutation(
   write: EvaluatedWrite,
   read: EvaluatedPolicy,
 ): void {
+  // A view has no single writable table behind it — reject writes up front
+  // rather than letting them reach (and be rejected by) the database.
+  if (resource.readOnly) {
+    throw new ValidationError(`Resource "${resource.name}" is read-only.`)
+  }
   const writable = new Set(write.writableFields)
   const readable = new Set(read.allowedFields)
 
