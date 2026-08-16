@@ -1,6 +1,6 @@
 {
   "name": "@valv/postgres",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Postgres adapter for valv — row-level security and access control for AI agents, over a runtime connection",
   "keywords": [
     "postgres",
@@ -37,7 +37,7 @@
     "build": "tsc"
   },
   "peerDependencies": {
-    "@valv/core": "^0.10.0",
+    "@valv/core": ">=0.10.0 <1",
     "pg": "^8.0.0",
     "postgres": "^3.0.0"
   },
