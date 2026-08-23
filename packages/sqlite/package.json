@@ -1,6 +1,6 @@
 {
   "name": "@valv/sqlite",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "SQLite adapter for valv — row-level security and access control for AI agents, over a runtime connection",
   "keywords": [
     "sqlite",
@@ -37,7 +37,7 @@
     "build": "tsc"
   },
   "peerDependencies": {
-    "@valv/core": "^0.10.0",
+    "@valv/core": ">=0.10.0 <1",
     "better-sqlite3": "^11.0.0 || ^12.0.0"
   },
   "peerDependenciesMeta": {

@@ -1,6 +1,6 @@
 {
   "name": "@valv/mysql",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "MySQL adapter for valv — row-level security and access control for AI agents, over a runtime connection",
   "keywords": [
     "mysql",
@@ -37,7 +37,7 @@
     "build": "tsc"
   },
   "peerDependencies": {
-    "@valv/core": "^0.10.0",
+    "@valv/core": ">=0.10.0 <1",
     "mysql2": "^3.0.0"
   },
   "publishConfig": {

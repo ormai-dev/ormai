@@ -77,6 +77,7 @@ function introspectingClient(): PostgresSql {
   return {
     async unsafe(query: string) {
       if (query.includes("information_schema.columns")) return columnRows
+      if (query.includes("c.relkind = 'm'")) return []
       // Keys come from pg_catalog (contype 'p'/'f'), not table_constraints, so a
       // read-only role that doesn't own the tables can still see them.
       if (query.includes("con.contype = 'p'")) return pkRows
@@ -141,6 +142,7 @@ describe("postgres introspection namespace", () => {
       async unsafe(query: string) {
         queries.push(query)
         if (query.includes("information_schema.columns")) return columnRows
+        if (query.includes("c.relkind = 'm'")) return []
         if (query.includes("con.contype = 'p'")) return pkRows
         if (query.includes("con.contype = 'f'")) return fkRows
         throw new Error(`unexpected query: ${query}`)
@@ -155,7 +157,7 @@ describe("postgres introspection namespace", () => {
 
     // Every introspection query is scoped to the requested schema.
     expect(queries.some((q) => q.includes("c.table_schema = 'rnacen'"))).toBe(true)
-    expect(queries.filter((q) => q.includes("n.nspname = 'rnacen'")).length).toBe(2)
+    expect(queries.filter((q) => q.includes("n.nspname = 'rnacen'")).length).toBe(3)
     expect(queries.some((q) => q.includes("'public'"))).toBe(false)
 
     // Compiled SQL qualifies the table as "rnacen"."orders".
