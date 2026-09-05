@@ -2,13 +2,16 @@ import type { Document } from "mongodb"
 import type { FnDef, Query, SchemaMap, ValvAdapter } from "@valv/core"
 import { BASE_FUNCTIONS } from "@valv/core"
 import { compileMongoQuery } from "./compile"
+import { MONGODB_FUNCTIONS } from "./functions"
 import { introspectMongo } from "./introspection"
+import type { MongoRelations } from "./introspection"
 import type { MongoDatabase } from "./types"
 
 export interface MongoAdapterOptions {
   schema?: SchemaMap
   sampleSize?: number
   statementTimeoutMs?: number
+  relations?: MongoRelations
 }
 
 export interface MongoCompiledQuery {
@@ -32,6 +35,7 @@ export class MongoAdapter implements ValvAdapter {
       (await introspectMongo(this.database, {
         sampleSize: this.options.sampleSize,
         statementTimeoutMs: this.options.statementTimeoutMs,
+        relations: this.options.relations,
       }))
     return this.schemaCache
   }
@@ -52,6 +56,6 @@ export class MongoAdapter implements ValvAdapter {
   }
 
   functions(): Record<string, FnDef> {
-    return { ...BASE_FUNCTIONS }
+    return { ...BASE_FUNCTIONS, ...MONGODB_FUNCTIONS }
   }
 }

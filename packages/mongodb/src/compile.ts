@@ -1,65 +1,136 @@
 import { ObjectId } from "mongodb"
 import type { Document } from "mongodb"
-import type { Expr, FieldSchema, FnSelect, Query, SchemaMap, SelectItem } from "@valv/core"
-import { ValidationError } from "@valv/core"
+import type {
+  Expr,
+  FieldSchema,
+  FnSelect,
+  Query,
+  ResourceSchema,
+  SchemaMap,
+  SelectItem,
+} from "@valv/core"
+import { aliasForPath, resolveJoins, ROOT_ALIAS, ValidationError } from "@valv/core"
+import type { JoinNode } from "@valv/core"
 
 export interface MongoPlan {
   collection: string
   pipeline: Document[]
 }
 
-export function compileMongoQuery(query: Query, catalog: SchemaMap): MongoPlan {
-  const resource = Object.prototype.hasOwnProperty.call(catalog.resources, query.from)
-    ? catalog.resources[query.from]
-    : undefined
-  if (!resource) throw new ValidationError(`Unknown resource "${query.from}".`)
+interface CompileContext {
+  resources: Map<string, ResourceSchema>
+}
 
+interface GroupKey {
+  expression: unknown
+  selectedOutput?: string
+  column?: Extract<Expr, { kind: "col" }>
+}
+
+const AGGREGATE_FUNCTIONS = new Set(["count", "sum", "avg", "min", "max"])
+
+export function compileMongoQuery(query: Query, catalog: SchemaMap): MongoPlan {
+  const resource = ownResource(catalog, query.from)
+  const joins = resolveJoins(query, catalog)
+  const ctx = compileContext(catalog, resource, joins)
   const pipeline: Document[] = []
+
+  appendLookups(pipeline, resource, joins)
   if (query.where) {
-    pipeline.push({ $match: { $expr: { $eq: [compileExpr(query.where, resource.fields), true] } } })
+    pipeline.push({ $match: { $expr: { $eq: [compileExpr(query.where, ctx), true] } } })
   }
 
-  const aggregate = query.select.some((item) => "fn" in item)
+  const aggregate =
+    Boolean(query.groupBy?.length) ||
+    query.select.some((item) => "fn" in item && AGGREGATE_FUNCTIONS.has(item.fn))
   if (aggregate) {
-    pipeline.push(...compileAggregate(query))
+    pipeline.push(...compileAggregate(query, ctx))
   } else {
-    appendSourceSort(pipeline, query)
+    appendSourceSort(pipeline, query, ctx)
     appendPagination(pipeline, query)
-    pipeline.push({ $project: compileProjection(query.select) })
+    pipeline.push({ $project: compileProjection(query.select, ctx) })
   }
 
   return { collection: resource.tableName, pipeline }
 }
 
-function compileExpr(expr: Expr, fields: Record<string, FieldSchema>): unknown {
+function ownResource(catalog: SchemaMap, name: string): ResourceSchema {
+  const resource = Object.prototype.hasOwnProperty.call(catalog.resources, name)
+    ? catalog.resources[name]
+    : undefined
+  if (!resource) throw new ValidationError(`Unknown resource "${name}".`)
+  return resource
+}
+
+function compileContext(
+  catalog: SchemaMap,
+  root: ResourceSchema,
+  joins: JoinNode[],
+): CompileContext {
+  const resources = new Map<string, ResourceSchema>([[ROOT_ALIAS, root]])
+  for (const join of joins) resources.set(join.alias, join.resource)
+  return { resources }
+}
+
+function appendLookups(pipeline: Document[], root: ResourceSchema, joins: JoinNode[]): void {
+  const resources = new Map<string, ResourceSchema>([[ROOT_ALIAS, root]])
+  for (const node of joins) {
+    const parent = resources.get(node.parentAlias)
+    if (!parent) throw new ValidationError("Invalid relation path.")
+    const child = node.resource
+    const foreignKeyOnParent = node.relation.type === "belongsTo"
+    const localName = foreignKeyOnParent
+      ? node.relation.foreignKey
+      : (node.relation.targetKey ?? primaryKey(parent))
+    const foreignName = foreignKeyOnParent
+      ? (node.relation.targetKey ?? primaryKey(child))
+      : node.relation.foreignKey
+
+    const localPath = storagePath(parent, localName)
+    const foreignPath = storagePath(child, foreignName)
+    const parentPrefix = node.parentAlias === ROOT_ALIAS ? "" : `${node.parentAlias}.`
+    pipeline.push({
+      $lookup: {
+        from: child.tableName,
+        localField: `${parentPrefix}${localPath}`,
+        foreignField: foreignPath,
+        as: node.alias,
+      },
+    })
+    pipeline.push({ $unwind: { path: `$${node.alias}` } })
+    resources.set(node.alias, child)
+  }
+}
+
+function compileExpr(expr: Expr, ctx: CompileContext): unknown {
   switch (expr.kind) {
     case "col":
-      return fieldRef(expr)
+      return fieldRef(expr, ctx)
     case "value":
       return expr.value
     case "null": {
       const ref = requireColumn(expr.expr)
-      const type = { $type: fieldRef(ref) }
+      const type = { $type: fieldRef(ref, ctx) }
       return expr.negated
         ? { $and: [{ $ne: [type, "missing"] }, { $ne: [type, "null"] }] }
         : { $eq: [type, "null"] }
     }
     case "cmp":
-      return compileComparison(expr, fields)
+      return compileComparison(expr, ctx)
     case "and": {
-      const args = expr.args.map((arg) => compileExpr(arg, fields))
+      const args = expr.args.map((arg) => compileExpr(arg, ctx))
       return {
         $cond: [{ $in: [false, args] }, false, { $cond: [{ $in: [null, args] }, null, true] }],
       }
     }
     case "or": {
-      const args = expr.args.map((arg) => compileExpr(arg, fields))
+      const args = expr.args.map((arg) => compileExpr(arg, ctx))
       return {
         $cond: [{ $in: [true, args] }, true, { $cond: [{ $in: [null, args] }, null, false] }],
       }
     }
     case "not": {
-      const arg = compileExpr(expr.arg, fields)
+      const arg = compileExpr(expr.arg, ctx)
       return {
         $switch: {
           branches: [
@@ -73,17 +144,14 @@ function compileExpr(expr: Expr, fields: Record<string, FieldSchema>): unknown {
   }
 }
 
-function compileComparison(
-  expr: Extract<Expr, { kind: "cmp" }>,
-  fields: Record<string, FieldSchema>,
-): unknown {
-  const left = compileOperand(expr.left, expr.right, fields)
-  const right = compileOperand(expr.right, expr.left, fields)
+function compileComparison(expr: Extract<Expr, { kind: "cmp" }>, ctx: CompileContext): unknown {
+  const left = compileOperand(expr.left, expr.right, ctx)
+  const right = compileOperand(expr.right, expr.left, ctx)
   const columns = [expr.left, expr.right].filter(
     (operand): operand is Extract<Expr, { kind: "col" }> => operand.kind === "col",
   )
   const present = columns.map((column) => {
-    const type = { $type: fieldRef(column) }
+    const type = { $type: fieldRef(column, ctx) }
     return { $and: [{ $ne: [type, "missing"] }, { $ne: [type, "null"] }] }
   })
 
@@ -98,7 +166,7 @@ function compileComparison(
     }
     comparison = {
       $regexMatch: {
-        input: fieldRef(expr.left),
+        input: fieldRef(expr.left, ctx),
         regex: likePatternToRegex(expr.right.value),
         ...(expr.op === "ilike" ? { options: "i" } : {}),
       },
@@ -118,13 +186,13 @@ function compileComparison(
   return { $cond: [{ $and: present }, comparison, null] }
 }
 
-function compileOperand(operand: Expr, other: Expr, fields: Record<string, FieldSchema>): unknown {
-  if (operand.kind === "col") return fieldRef(operand)
+function compileOperand(operand: Expr, other: Expr, ctx: CompileContext): unknown {
+  if (operand.kind === "col") return fieldRef(operand, ctx)
   if (operand.kind === "value") {
-    const field = other.kind === "col" ? fields[other.name] : undefined
+    const field = other.kind === "col" ? fieldFor(other, ctx) : undefined
     return { $literal: coerceValue(operand.value, field) }
   }
-  return compileExpr(operand, fields)
+  return compileExpr(operand, ctx)
 }
 
 function coerceValue(value: unknown, field: FieldSchema | undefined): unknown {
@@ -145,20 +213,45 @@ function coerceValue(value: unknown, field: FieldSchema | undefined): unknown {
   return value
 }
 
-function requireColumn(expr: Expr): Extract<Expr, { kind: "col" }> {
-  if (expr.kind !== "col") throw new ValidationError("A null check needs a column.")
+function requireColumn(expr: Expr | undefined): Extract<Expr, { kind: "col" }> {
+  if (!expr || expr.kind !== "col") throw new ValidationError("A column argument is required.")
   return expr
 }
 
-function fieldRef(column: Extract<Expr, { kind: "col" }>): string {
-  return fieldPath(column.rel, column.name)
+function fieldRef(column: Extract<Expr, { kind: "col" }>, ctx: CompileContext): string {
+  const resource = resourceFor(column.rel, ctx)
+  const prefix = column.rel?.length ? `${aliasForPath(column.rel)}.` : ""
+  return `$${prefix}${storagePath(resource, column.name)}`
 }
 
-function fieldPath(rel: string[] | undefined, name: string): string {
-  if (rel?.length) {
-    throw new ValidationError("MongoDB relation queries are not supported yet.")
+function fieldFor(
+  column: Extract<Expr, { kind: "col" }>,
+  ctx: CompileContext,
+): FieldSchema | undefined {
+  const resource = resourceFor(column.rel, ctx)
+  return hasField(resource, column.name) ? resource.fields[column.name] : undefined
+}
+
+function resourceFor(rel: string[] | undefined, ctx: CompileContext): ResourceSchema {
+  const resource = ctx.resources.get(rel?.length ? aliasForPath(rel) : ROOT_ALIAS)
+  if (!resource) throw new ValidationError("Relation is not accessible.")
+  return resource
+}
+
+function storagePath(resource: ResourceSchema, name: string): string {
+  if (!hasField(resource, name)) {
+    throw new ValidationError(`Relation key "${name}" is not accessible.`)
   }
-  return `$${name}`
+  const field = resource.fields[name]
+  return field.jsonPath ? [field.jsonPath.column, ...field.jsonPath.path].join(".") : field.name
+}
+
+function hasField(resource: ResourceSchema, name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(resource.fields, name)
+}
+
+function primaryKey(resource: ResourceSchema): string {
+  return Object.values(resource.fields).find((field) => field.isId)?.name ?? "_id"
 }
 
 function likePatternToRegex(pattern: string): string {
@@ -182,42 +275,46 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
-function compileProjection(select: SelectItem[]): Document {
+function compileProjection(select: SelectItem[], ctx: CompileContext): Document {
   const projection = emptyDocument()
   if (!select.some((item) => !("fn" in item) && outputName(item) === "_id")) projection._id = 0
   for (const item of select) {
-    if ("fn" in item) throw new ValidationError("Aggregate functions require an aggregate query.")
-    projection[outputName(item)] = { $ifNull: [fieldPath(item.rel, item.col), null] }
+    const value = "fn" in item ? compileScalarFunction(item, ctx) : fieldRef(toColumn(item), ctx)
+    projection[outputName(item)] = { $ifNull: [value, null] }
   }
   return projection
 }
 
-function compileAggregate(query: Query): Document[] {
-  const keys = resolveGroupKeys(query)
+function compileAggregate(query: Query, ctx: CompileContext): Document[] {
+  const keys = resolveGroupKeys(query, ctx)
   const group = emptyDocument()
   group._id = keys.length ? emptyDocument() : null
   keys.forEach((key, index) => {
-    group._id[`k${index}`] = fieldRef(key)
+    group._id[`k${index}`] = key.expression
   })
 
   for (const item of query.select) {
-    if (!("fn" in item)) continue
-    group[outputName(item)] = compileAccumulator(item)
+    if ("fn" in item && AGGREGATE_FUNCTIONS.has(item.fn)) {
+      group[outputName(item)] = compileAccumulator(item, ctx)
+    }
   }
 
   const project = emptyDocument()
   project._id = 0
   for (const item of query.select) {
-    if ("fn" in item) {
+    if ("fn" in item && AGGREGATE_FUNCTIONS.has(item.fn)) {
       project[outputName(item)] = `$${outputName(item)}`
       continue
     }
-    const index = keys.findIndex((key) => sameColumn(key, item))
+    const index = groupKeyIndex(keys, item)
     if (index === -1) {
-      throw new ValidationError(`Column "${item.col}" must appear in groupBy.`)
+      throw new ValidationError(
+        `Column or expression "${outputName(item)}" must appear in groupBy.`,
+      )
     }
     project[outputName(item)] = `$_id.k${index}`
   }
+
   const pipeline: Document[] = [{ $group: group }]
   appendAggregateSort(pipeline, query, keys)
   appendPagination(pipeline, query)
@@ -225,13 +322,13 @@ function compileAggregate(query: Query): Document[] {
   return pipeline
 }
 
-function compileAccumulator(item: FnSelect): Document {
+function compileAccumulator(item: FnSelect, ctx: CompileContext): Document {
   switch (item.fn) {
     case "count": {
       const arg = item.args[0]
       if (!arg) return { $sum: 1 }
       const column = requireColumn(arg)
-      const type = { $type: fieldRef(column) }
+      const type = { $type: fieldRef(column, ctx) }
       return {
         $sum: {
           $cond: [{ $and: [{ $ne: [type, "missing"] }, { $ne: [type, "null"] }] }, 1, 0],
@@ -243,58 +340,106 @@ function compileAccumulator(item: FnSelect): Document {
     case "min":
     case "max": {
       const column = requireColumn(item.args[0])
-      return { [`$${item.fn}`]: fieldRef(column) }
+      return { [`$${item.fn}`]: fieldRef(column, ctx) }
     }
     default:
-      throw new ValidationError(`Function "${item.fn}" is not available in MongoDB.`)
+      throw new ValidationError(`Function "${item.fn}" is not an aggregate function.`)
   }
 }
 
-function resolveGroupKeys(query: Query): Extract<Expr, { kind: "col" }>[] {
-  const selected = new Map<string, Extract<SelectItem, { col: string }>>()
-  for (const item of query.select) if (!("fn" in item)) selected.set(outputName(item), item)
+function compileScalarFunction(item: FnSelect, ctx: CompileContext): unknown {
+  if (item.fn !== "dateTrunc") {
+    throw new ValidationError(`Function "${item.fn}" is not available in MongoDB.`)
+  }
+  const column = requireColumn(item.args[0])
+  const unit = item.args[1]
+  if (!unit || unit.kind !== "value" || typeof unit.value !== "string") {
+    throw new ValidationError('Function "dateTrunc" needs a date column and time unit.')
+  }
+  return { $dateTrunc: { date: fieldRef(column, ctx), unit: unit.value } }
+}
 
+function resolveGroupKeys(query: Query, ctx: CompileContext): GroupKey[] {
+  const selected = new Map(query.select.map((item) => [outputName(item), item]))
   return (query.groupBy ?? []).map((key) => {
-    if (typeof key !== "string") return { kind: "col", name: key.col, rel: key.rel }
-    const selectedColumn = selected.get(key)
-    return selectedColumn
-      ? { kind: "col", name: selectedColumn.col, rel: selectedColumn.rel }
-      : { kind: "col", name: key }
+    if (typeof key !== "string") {
+      const column = toExprColumn(key)
+      return { expression: fieldRef(column, ctx), column }
+    }
+
+    const item = selected.get(key)
+    if (!item) {
+      const column: Extract<Expr, { kind: "col" }> = { kind: "col", name: key }
+      return { expression: fieldRef(column, ctx), column }
+    }
+    if ("fn" in item) {
+      if (AGGREGATE_FUNCTIONS.has(item.fn)) {
+        throw new ValidationError(`Aggregate "${key}" cannot appear in groupBy.`)
+      }
+      return { expression: compileScalarFunction(item, ctx), selectedOutput: key }
+    }
+    const column = toColumn(item)
+    return { expression: fieldRef(column, ctx), selectedOutput: key, column }
   })
 }
 
-function appendSourceSort(pipeline: Document[], query: Query): void {
+function groupKeyIndex(keys: GroupKey[], item: SelectItem): number {
+  const output = outputName(item)
+  return keys.findIndex((key) => {
+    if (key.selectedOutput === output) return true
+    return !("fn" in item) && key.column ? sameColumn(key.column, item) : false
+  })
+}
+
+function appendSourceSort(pipeline: Document[], query: Query, ctx: CompileContext): void {
   if (!query.orderBy?.length) return
-  const aliases = new Map<string, Extract<SelectItem, { col: string }>>()
-  for (const item of query.select) if (!("fn" in item)) aliases.set(outputName(item), item)
+  const selected = new Map(query.select.map((item) => [outputName(item), item]))
+  const computed = emptyDocument()
   const sort = emptyDocument()
-  for (const order of query.orderBy) {
-    if (order.rel?.length)
-      throw new ValidationError("MongoDB relation queries are not supported yet.")
-    const selected = aliases.get(order.col)
-    sort[selected?.col ?? order.col] = order.dir === "asc" ? 1 : -1
+  for (const [index, order] of query.orderBy.entries()) {
+    const item = !order.rel?.length ? selected.get(order.col) : undefined
+    if (item && "fn" in item) {
+      const temporary = availableTemporaryField(ctx, computed, index)
+      computed[temporary] = compileScalarFunction(item, ctx)
+      sort[temporary] = order.dir === "asc" ? 1 : -1
+      continue
+    }
+    const column = item && !("fn" in item) ? toColumn(item) : toExprColumn(order)
+    sort[fieldRef(column, ctx).slice(1)] = order.dir === "asc" ? 1 : -1
   }
+  if (Object.keys(computed).length) pipeline.push({ $set: computed })
   pipeline.push({ $sort: sort })
 }
 
-function appendAggregateSort(
-  pipeline: Document[],
-  query: Query,
-  keys: Extract<Expr, { kind: "col" }>[],
-): void {
-  if (!query.orderBy?.length) return
-  const sourceByOutput = new Map<string, Extract<SelectItem, { col: string }>>()
-  for (const item of query.select) {
-    if (!("fn" in item)) sourceByOutput.set(outputName(item), item)
+function availableTemporaryField(ctx: CompileContext, computed: Document, index: number): string {
+  const root = ctx.resources.get(ROOT_ALIAS)
+  let suffix = index
+  while (
+    (root && hasField(root, `__valv_sort_${suffix}`)) ||
+    Object.prototype.hasOwnProperty.call(computed, `__valv_sort_${suffix}`)
+  ) {
+    suffix++
   }
+  return `__valv_sort_${suffix}`
+}
+
+function appendAggregateSort(pipeline: Document[], query: Query, keys: GroupKey[]): void {
+  if (!query.orderBy?.length) return
+  const selected = new Map(query.select.map((item) => [outputName(item), item]))
   const sort = emptyDocument()
   for (const order of query.orderBy) {
-    if (order.rel?.length)
-      throw new ValidationError("MongoDB relation queries are not supported yet.")
-    const selected = sourceByOutput.get(order.col)
-    const name = selected?.col ?? order.col
-    const index = keys.findIndex((key) => key.name === name && !key.rel?.length)
-    sort[index >= 0 ? `_id.k${index}` : order.col] = order.dir === "asc" ? 1 : -1
+    const item = !order.rel?.length ? selected.get(order.col) : undefined
+    if (item && "fn" in item && AGGREGATE_FUNCTIONS.has(item.fn)) {
+      sort[order.col] = order.dir === "asc" ? 1 : -1
+      continue
+    }
+    const index = item
+      ? groupKeyIndex(keys, item)
+      : keys.findIndex((key) => key.column && sameColumn(key.column, toExprColumn(order)))
+    if (index === -1) {
+      throw new ValidationError(`Order expression "${order.col}" must appear in groupBy.`)
+    }
+    sort[`_id.k${index}`] = order.dir === "asc" ? 1 : -1
   }
   pipeline.push({ $sort: sort })
 }
@@ -306,14 +451,23 @@ function appendPagination(pipeline: Document[], query: Query): void {
 
 function outputName(item: SelectItem): string {
   if ("fn" in item) return item.as ?? item.fn
-  return item.as ?? item.col
+  return item.as ?? (item.rel?.length ? `${item.rel.join("_")}_${item.col}` : item.col)
+}
+
+function toColumn(item: Extract<SelectItem, { col: string }>): Extract<Expr, { kind: "col" }> {
+  return { kind: "col", name: item.col, ...(item.rel ? { rel: item.rel } : {}) }
+}
+
+function toExprColumn(item: { col: string; rel?: string[] }): Extract<Expr, { kind: "col" }> {
+  return { kind: "col", name: item.col, ...(item.rel ? { rel: item.rel } : {}) }
 }
 
 function sameColumn(
   left: Extract<Expr, { kind: "col" }>,
-  right: Extract<SelectItem, { col: string }>,
+  right: { col: string; rel?: string[] } | Extract<Expr, { kind: "col" }>,
 ): boolean {
-  return left.name === right.col && (left.rel ?? []).join(".") === (right.rel ?? []).join(".")
+  const name = "col" in right ? right.col : right.name
+  return left.name === name && (left.rel ?? []).join(".") === (right.rel ?? []).join(".")
 }
 
 function emptyDocument(): Document {

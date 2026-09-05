@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { ObjectId } from "mongodb"
 import { createValv, introspectMongo, type MongoDatabase } from "@valv/mongodb"
-import type { DefaultContext, FieldSchema, SchemaMap } from "@valv/core"
+import type { DefaultContext, FieldSchema, RelationSchema, SchemaMap } from "@valv/core"
 
 const field = (
   name: string,
@@ -22,7 +22,6 @@ const schema: SchemaMap = {
     orders: {
       name: "orders",
       tableName: "orders",
-      relations: {},
       fields: {
         _id: field("_id", "string", "objectId", {
           isId: true,
@@ -30,10 +29,45 @@ const schema: SchemaMap = {
           hasDefaultValue: true,
         }),
         tenantId: field("tenantId", "string", "string"),
+        customerId: field("customerId", "string", "objectId"),
         status: field("status", "string", "string"),
         total: field("total", "number", "double"),
         createdAt: field("createdAt", "date", "date"),
+        metadata__source: field("metadata__source", "string", "string", {
+          jsonPath: { column: "metadata", path: ["source"] },
+        }),
         internalNotes: field("internalNotes", "string", "string", { sensitive: true }),
+      },
+      relations: {
+        customer: {
+          name: "customer",
+          targetResource: "customers",
+          type: "belongsTo",
+          foreignKey: "customerId",
+          targetKey: "_id",
+        },
+      },
+    },
+    customers: {
+      name: "customers",
+      tableName: "customers",
+      relations: {
+        orders: {
+          name: "orders",
+          targetResource: "orders",
+          type: "hasMany",
+          foreignKey: "customerId",
+          targetKey: "_id",
+        },
+      },
+      fields: {
+        _id: field("_id", "string", "objectId", {
+          isId: true,
+          isPrimaryKeyPart: true,
+          hasDefaultValue: true,
+        }),
+        tenantId: field("tenantId", "string", "string"),
+        name: field("name", "string", "string"),
       },
     },
   },
@@ -84,7 +118,13 @@ async function setup(rows: unknown[] = []) {
   })
   valv.policy("orders", (context) => ({
     read: { tenantId: context.tenant!.id },
-    fields: { allow: ["_id", "status", "total", "createdAt"] },
+    fields: {
+      allow: ["_id", "customerId", "status", "total", "createdAt", "metadata__source"],
+    },
+  }))
+  valv.policy("customers", (context) => ({
+    read: { tenantId: context.tenant!.id },
+    fields: { allow: ["_id", "name"] },
   }))
   return { valv, calls }
 }
@@ -153,6 +193,167 @@ describe("MongoDB query pipeline", () => {
     })
   })
 
+  it("reads an allowlisted nested document field through trusted catalog metadata", async () => {
+    const { valv, calls } = await setup()
+    await valv.run(
+      {
+        from: "orders",
+        select: { source: { col: "metadata__source" } },
+        where: { metadata__source: { startsWith: "api" } },
+      },
+      ctx,
+    )
+
+    expect(JSON.stringify(calls[0].pipeline)).toContain("$metadata.source")
+    expect(calls[0].pipeline.at(-1)).toEqual({
+      $project: { _id: 0, source: { $ifNull: ["$metadata.source", null] } },
+    })
+  })
+
+  it("compiles dateTrunc as a grouped expression", async () => {
+    const { valv, calls } = await setup()
+    await valv.run(
+      {
+        from: "orders",
+        select: {
+          month: { dateTrunc: ["createdAt", "month"] },
+          revenue: { sum: "total" },
+        },
+        groupBy: ["month"],
+        orderBy: { month: "asc" },
+      },
+      ctx,
+    )
+
+    expect(calls[0].pipeline[1]).toEqual({
+      $group: {
+        _id: { k0: { $dateTrunc: { date: "$createdAt", unit: "month" } } },
+        revenue: { $sum: "$total" },
+      },
+    })
+  })
+
+  it("projects and orders by a row-level dateTrunc expression", async () => {
+    const { valv, calls } = await setup()
+    await valv.run(
+      {
+        from: "orders",
+        select: { day: { dateTrunc: ["createdAt", "day"] }, status: true },
+        orderBy: { day: "asc" },
+      },
+      ctx,
+    )
+
+    expect(calls[0].pipeline.slice(-4)).toEqual([
+      { $set: { __valv_sort_0: { $dateTrunc: { date: "$createdAt", unit: "day" } } } },
+      { $sort: { __valv_sort_0: 1 } },
+      { $limit: 100 },
+      {
+        $project: {
+          _id: 0,
+          day: { $ifNull: [{ $dateTrunc: { date: "$createdAt", unit: "day" } }, null] },
+          status: { $ifNull: ["$status", null] },
+        },
+      },
+    ])
+  })
+
+  it("joins a declared relation and applies the related resource policy", async () => {
+    const { valv, calls } = await setup()
+    await valv.run(
+      {
+        from: "orders",
+        select: { status: true, customer_name: { col: "customer.name" } },
+      },
+      ctx,
+    )
+
+    expect(calls[0].pipeline.slice(0, 2)).toEqual([
+      {
+        $lookup: {
+          from: "customers",
+          localField: "customerId",
+          foreignField: "_id",
+          as: "j_customer",
+        },
+      },
+      { $unwind: { path: "$j_customer" } },
+    ])
+    expect(JSON.stringify(calls[0].pipeline[2])).toContain("$j_customer.tenantId")
+    expect(calls[0].pipeline.at(-1)).toEqual({
+      $project: {
+        _id: 0,
+        status: { $ifNull: ["$status", null] },
+        customer_name: { $ifNull: ["$j_customer.name", null] },
+      },
+    })
+  })
+
+  it("orients an inverse hasMany lookup from the parent id to the child foreign key", async () => {
+    const { valv, calls } = await setup()
+    await valv.run(
+      {
+        from: "customers",
+        select: { customer: { col: "name" }, order_status: { col: "orders.status" } },
+      },
+      ctx,
+    )
+
+    expect(calls[0].pipeline[0]).toEqual({
+      $lookup: {
+        from: "orders",
+        localField: "_id",
+        foreignField: "customerId",
+        as: "j_orders",
+      },
+    })
+  })
+
+  it("blocks a relation before executing when the parent policy denies traversal", async () => {
+    const { database, calls } = fakeDatabase()
+    const valv = await createValv<DefaultContext>(database, {
+      schema,
+      defaultPolicy: "deny-all",
+    })
+    valv.policy("orders", (context) => ({
+      read: { tenantId: context.tenant!.id },
+      relations: { customer: false },
+    }))
+    valv.policy("customers", () => ({ read: true }))
+
+    await expect(
+      valv.run({ from: "orders", select: { customer_name: { col: "customer.name" } } }, ctx),
+    ).rejects.toThrow(/Relation "customer" is not accessible/)
+    expect(calls).toHaveLength(0)
+  })
+
+  it("coerces a nested ObjectId filter from trusted field metadata", async () => {
+    const id = new ObjectId()
+    const nestedSchema = structuredClone(schema)
+    nestedSchema.resources.orders.fields.metadata__ownerId = field(
+      "metadata__ownerId",
+      "string",
+      "objectId",
+      { jsonPath: { column: "metadata", path: ["ownerId"] } },
+    )
+    const { database, calls } = fakeDatabase()
+    const valv = await createValv<DefaultContext>(database, {
+      schema: nestedSchema,
+      defaultPolicy: "allow-all",
+    })
+
+    await valv.run(
+      {
+        from: "orders",
+        select: { owner: { col: "metadata__ownerId" } },
+        where: { metadata__ownerId: id.toHexString() },
+      },
+      ctx,
+    )
+
+    expect(findObjectId(calls[0].pipeline)?.toHexString()).toBe(id.toHexString())
+  })
+
   it("coerces string ids to ObjectId and serializes ObjectId results", async () => {
     const id = new ObjectId()
     const { valv, calls } = await setup([{ _id: id }])
@@ -215,7 +416,14 @@ describe("MongoDB introspection", () => {
           aggregate() {
             return {
               async toArray() {
-                return [{ _id: id, tenantId: "acme", total: 12.5, metadata: { source: "api" } }]
+                return [
+                  {
+                    _id: id,
+                    tenantId: "acme",
+                    total: 12.5,
+                    metadata: { source: "api", device: { mobile: true } },
+                  },
+                ]
               },
             }
           },
@@ -233,7 +441,83 @@ describe("MongoDB introspection", () => {
     })
     expect(catalog.resources.orders.fields.tenantId.isNullable).toBe(false)
     expect(catalog.resources.orders.fields.total.type).toBe("number")
-    expect(catalog.resources.orders.fields.metadata.type).toBe("json")
+    expect(catalog.resources.orders.fields.metadata__source).toMatchObject({
+      type: "string",
+      jsonPath: { column: "metadata", path: ["source"] },
+    })
+    expect(catalog.resources.orders.fields.metadata__device__mobile).toMatchObject({
+      type: "boolean",
+      jsonPath: { column: "metadata", path: ["device", "mobile"] },
+    })
+    expect(catalog.resources.orders.fields.metadata).toBeUndefined()
+  })
+
+  it("merges declared cross-collection relations into the introspected catalog", async () => {
+    const relation: RelationSchema = {
+      name: "customer",
+      targetResource: "customers",
+      type: "belongsTo",
+      foreignKey: "customerId",
+      targetKey: "_id",
+    }
+    const database: MongoDatabase = {
+      listCollections() {
+        return {
+          async toArray() {
+            return [
+              { name: "orders", type: "collection" },
+              { name: "customers", type: "collection" },
+            ]
+          },
+        }
+      },
+      collection(name) {
+        return {
+          aggregate() {
+            return {
+              async toArray() {
+                return name === "orders"
+                  ? [{ _id: new ObjectId(), customerId: new ObjectId() }]
+                  : [{ _id: new ObjectId(), name: "Acme" }]
+              },
+            }
+          },
+        }
+      },
+    }
+
+    const catalog = await introspectMongo(database, {
+      relations: { orders: { customer: relation } },
+    })
+
+    expect(catalog.resources.orders.relations.customer).toEqual(relation)
+  })
+
+  it("keeps a physical field when its name collides with a generated nested name", async () => {
+    const database: MongoDatabase = {
+      listCollections() {
+        return {
+          async toArray() {
+            return [{ name: "events", type: "collection" }]
+          },
+        }
+      },
+      collection() {
+        return {
+          aggregate() {
+            return {
+              async toArray() {
+                return [{ metadata__source: "physical", metadata: { source: "nested" } }]
+              },
+            }
+          },
+        }
+      },
+    }
+
+    const catalog = await introspectMongo(database)
+
+    expect(catalog.resources.events.fields.metadata__source.jsonPath).toBeUndefined()
   })
 })
 

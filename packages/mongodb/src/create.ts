@@ -2,25 +2,28 @@ import { Valv } from "@valv/core"
 import type { DefaultContext, SchemaMap, ValvConfig } from "@valv/core"
 import { MongoClient } from "mongodb"
 import { MongoAdapter } from "./adapter"
+import type { MongoRelations } from "./introspection"
 import type { MongoDatabase } from "./types"
 
 export type MongoCreateConfig<TContext> = Omit<ValvConfig<TContext, string>, "adapter"> & {
   schema: "introspect" | SchemaMap
   sampleSize?: number
   statementTimeoutMs?: number
+  relations?: MongoRelations
 }
 
 export async function createValv<TContext = DefaultContext>(
   database: MongoDatabase,
   config: MongoCreateConfig<TContext>,
 ): Promise<Valv<TContext, string>> {
-  const { schema, sampleSize, statementTimeoutMs, ...rest } = config
+  const { schema, sampleSize, statementTimeoutMs, relations, ...rest } = config
   const valv = new Valv<TContext, string>({
     ...rest,
     adapter: new MongoAdapter(database, {
       schema: schema === "introspect" ? undefined : schema,
       sampleSize,
       statementTimeoutMs,
+      relations,
     }),
   })
   await valv.loadSchema()

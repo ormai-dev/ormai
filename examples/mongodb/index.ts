@@ -10,12 +10,29 @@ async function main(): Promise<void> {
   const { valv, stop } = await createValvFromUrl<DefaultContext>(databaseUrl, {
     database: databaseName,
     defaultPolicy: "deny-all",
+    relations: {
+      orders: {
+        customer: {
+          name: "customer",
+          targetResource: "customers",
+          type: "belongsTo",
+          foreignKey: "customerId",
+          targetKey: "_id",
+        },
+      },
+    },
   })
 
   try {
     valv.policy("orders", (context) => ({
       read: { tenantId: context.tenant!.id },
-      fields: { allow: ["_id", "status", "total", "createdAt"] },
+      fields: {
+        allow: ["_id", "customerId", "status", "total", "metadata__source", "createdAt"],
+      },
+    }))
+    valv.policy("customers", (context) => ({
+      read: { tenantId: context.tenant!.id },
+      fields: { allow: ["_id", "name"] },
     }))
 
     const context: DefaultContext = {
@@ -27,11 +44,14 @@ async function main(): Promise<void> {
       {
         from: "orders",
         select: {
+          customer: { col: "customer.name" },
           status: true,
+          month: { dateTrunc: ["createdAt", "month"] },
+          source: { col: "metadata__source" },
           revenue: { sum: "total" },
           orders: { count: true },
         },
-        groupBy: ["status"],
+        groupBy: ["customer.name", "status", "month", "metadata__source"],
         orderBy: { revenue: "desc" },
       },
       context,

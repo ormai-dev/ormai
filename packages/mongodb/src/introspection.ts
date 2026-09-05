@@ -1,14 +1,21 @@
 import type { Document } from "mongodb"
-import type { FieldSchema, FieldType, ResourceSchema, SchemaMap } from "@valv/core"
+import type { FieldSchema, FieldType, RelationSchema, ResourceSchema, SchemaMap } from "@valv/core"
+import { ValidationError } from "@valv/core"
 import type { MongoCollectionInfo, MongoDatabase } from "./types"
+
+export type MongoRelations = Record<string, Record<string, RelationSchema>>
 
 export interface MongoIntrospectionOptions {
   sampleSize?: number
   statementTimeoutMs?: number
+  relations?: MongoRelations
 }
 
 const DEFAULT_SAMPLE_SIZE = 100
 const DEFAULT_STATEMENT_TIMEOUT_MS = 10_000
+const MAX_NESTING_DEPTH = 8
+const MAX_FIELDS_PER_COLLECTION = 1_000
+const IDENTIFIER = /^[A-Za-z0-9_]+$/
 
 export async function introspectMongo(
   database: MongoDatabase,
@@ -32,13 +39,19 @@ export async function introspectMongo(
         name: collection.name,
         tableName: collection.name,
         fields: inferFields(collection, samples),
-        relations: {},
+        relations: Object.create(null) as Record<string, RelationSchema>,
         ...(collection.type === "view" ? { readOnly: true } : {}),
       }
     }),
   )
 
+  mergeRelations(resources, options.relations)
   return { resources }
+}
+
+interface ObservedField {
+  path: string[]
+  types: Set<string>
 }
 
 function inferFields(
@@ -46,42 +59,196 @@ function inferFields(
   samples: Document[],
 ): Record<string, FieldSchema> {
   const validator = collection.options?.validator?.$jsonSchema as Document | undefined
-  const required = new Set<string>(Array.isArray(validator?.required) ? validator.required : [])
-  const observed = new Map<string, Set<string>>()
+  const observed = new Map<string, ObservedField>()
+  const requiredPaths = new Set<string>()
 
+  const rootRequired = new Set<string>(Array.isArray(validator?.required) ? validator.required : [])
   for (const [name, definition] of Object.entries((validator?.properties as Document) ?? {})) {
-    const types = schemaTypes(definition as Document)
-    observed.set(name, new Set(types))
+    if (!isDocument(definition)) continue
+    observeDefinition(observed, requiredPaths, [name], definition, rootRequired.has(name))
   }
 
   for (const sample of samples) {
     for (const [name, value] of Object.entries(sample)) {
-      const types = observed.get(name) ?? new Set<string>()
-      types.add(bsonType(value))
-      observed.set(name, types)
+      observeValue(observed, [name], value)
     }
   }
 
-  if (!observed.has("_id")) observed.set("_id", new Set(["objectId"]))
+  if (!observed.has("_id")) {
+    observed.set("_id", { path: ["_id"], types: new Set(["objectId"]) })
+  }
 
   const fields = Object.create(null) as Record<string, FieldSchema>
-  for (const [name, types] of observed) {
-    const nonNull = [...types].filter((type) => type !== "null")
-    const nativeType = collapseNativeType(nonNull)
+  const paths = [...observed.values()].sort((a, b) => a.path.length - b.path.length)
+  for (const entry of paths) {
+    if (hasDescendant(entry.path, paths)) continue
+    const name = entry.path.join("__")
+    if (!IDENTIFIER.test(name)) continue
+    // A physical top-level field wins when its name collides with a generated
+    // nested-field name. The nested path remains inaccessible instead of
+    // letting one policy name refer to two BSON values.
+    if (Object.prototype.hasOwnProperty.call(fields, name)) continue
+    const nonNull = [...entry.types].filter((type) => type !== "null")
     fields[name] = {
       name,
       type: fieldType(nonNull),
-      nativeType,
+      nativeType: collapseNativeType(nonNull),
       isNullable:
         name === "_id"
           ? false
-          : types.has("null") || !required.has(name) || samples.some((sample) => !(name in sample)),
+          : entry.types.has("null") ||
+            !requiredPaths.has(pathKey(entry.path)) ||
+            samples.some((sample) => !hasPath(sample, entry.path)),
       isId: name === "_id",
       isPrimaryKeyPart: name === "_id",
       hasDefaultValue: name === "_id",
+      ...(entry.path.length > 1
+        ? { jsonPath: { column: entry.path[0], path: entry.path.slice(1) } }
+        : {}),
     }
   }
   return fields
+}
+
+function observeDefinition(
+  observed: Map<string, ObservedField>,
+  requiredPaths: Set<string>,
+  path: string[],
+  definition: Document,
+  required: boolean,
+): void {
+  const types = schemaTypes(definition)
+  const properties = isDocument(definition.properties) ? definition.properties : undefined
+  const objectOnly = types.filter((type) => type !== "null").every((type) => type === "object")
+
+  if (properties && Object.keys(properties).length > 0 && objectOnly) {
+    const nestedRequired = new Set<string>(
+      Array.isArray(definition.required) ? definition.required : [],
+    )
+    for (const [name, child] of Object.entries(properties)) {
+      if (!isDocument(child)) continue
+      observeDefinition(
+        observed,
+        requiredPaths,
+        [...path, name],
+        child,
+        required && nestedRequired.has(name),
+      )
+    }
+    return
+  }
+
+  const entry = fieldAt(observed, path)
+  for (const type of types) entry.types.add(type)
+  if (required) requiredPaths.add(pathKey(path))
+}
+
+function observeValue(observed: Map<string, ObservedField>, path: string[], value: unknown): void {
+  if (
+    path.length < MAX_NESTING_DEPTH &&
+    isEmbeddedDocument(value) &&
+    Object.keys(value).length > 0
+  ) {
+    for (const [name, child] of Object.entries(value)) {
+      observeValue(observed, [...path, name], child)
+    }
+    return
+  }
+  fieldAt(observed, path).types.add(bsonType(value))
+}
+
+function fieldAt(observed: Map<string, ObservedField>, path: string[]): ObservedField {
+  const key = pathKey(path)
+  const existing = observed.get(key)
+  if (existing) return existing
+  if (observed.size >= MAX_FIELDS_PER_COLLECTION) {
+    throw new ValidationError(
+      `MongoDB collection exposes more than ${MAX_FIELDS_PER_COLLECTION} fields; use a hand-defined schema.`,
+    )
+  }
+  const created = { path, types: new Set<string>() }
+  observed.set(key, created)
+  return created
+}
+
+function pathKey(path: string[]): string {
+  return path.join("\0")
+}
+
+function hasDescendant(path: string[], fields: ObservedField[]): boolean {
+  return fields.some(
+    (candidate) =>
+      candidate.path.length > path.length &&
+      path.every((segment, index) => candidate.path[index] === segment),
+  )
+}
+
+function hasPath(document: Document, path: string[]): boolean {
+  let current: unknown = document
+  for (const segment of path) {
+    if (!isDocument(current) || !Object.prototype.hasOwnProperty.call(current, segment))
+      return false
+    current = current[segment]
+  }
+  return true
+}
+
+function isEmbeddedDocument(value: unknown): value is Document {
+  return isDocument(value) && !(value instanceof Date) && typeof value._bsontype !== "string"
+}
+
+function isDocument(value: unknown): value is Document {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function mergeRelations(
+  resources: Record<string, ResourceSchema>,
+  configured: MongoRelations | undefined,
+): void {
+  if (!configured) return
+  for (const [resourceName, relations] of Object.entries(configured)) {
+    const resource = resources[resourceName]
+    if (!resource) {
+      throw new ValidationError(`MongoDB relations reference unknown resource "${resourceName}".`)
+    }
+    for (const [name, relation] of Object.entries(relations)) {
+      if (!IDENTIFIER.test(name)) {
+        throw new ValidationError(`MongoDB relation name "${name}" is not a valid identifier.`)
+      }
+      if (name !== relation.name) {
+        throw new ValidationError(`MongoDB relation "${name}" must use the same name in its value.`)
+      }
+      const target = resources[relation.targetResource]
+      if (!target) {
+        throw new ValidationError(
+          `MongoDB relation "${name}" references unknown resource "${relation.targetResource}".`,
+        )
+      }
+      if (relation.type === "manyToMany") {
+        throw new ValidationError(`MongoDB many-to-many relation "${name}" is not supported.`)
+      }
+      const localKey =
+        relation.type === "belongsTo"
+          ? relation.foreignKey
+          : (relation.targetKey ?? primaryKey(resource))
+      const foreignKey =
+        relation.type === "belongsTo"
+          ? (relation.targetKey ?? primaryKey(target))
+          : relation.foreignKey
+      if (!hasField(resource, localKey) || !hasField(target, foreignKey)) {
+        throw new ValidationError(`MongoDB relation "${name}" references an unknown join field.`)
+      }
+      resource.relations[name] = relation
+    }
+  }
+}
+
+function hasField(resource: ResourceSchema, name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(resource.fields, name)
+}
+
+function primaryKey(resource: ResourceSchema): string {
+  return Object.values(resource.fields).find((field) => field.isId)?.name ?? "_id"
 }
 
 function schemaTypes(definition: Document): string[] {
