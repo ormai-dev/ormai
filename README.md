@@ -4,9 +4,9 @@
 
 [![npm](https://img.shields.io/npm/v/@valv/core?label=%40valv%2Fcore)](https://www.npmjs.com/package/@valv/core) [![npm](https://img.shields.io/npm/v/@valv/clickhouse?label=%40valv%2Fclickhouse)](https://www.npmjs.com/package/@valv/clickhouse) [![npm](https://img.shields.io/npm/v/@valv/prisma?label=%40valv%2Fprisma)](https://www.npmjs.com/package/@valv/prisma) [![npm](https://img.shields.io/npm/v/@valv/mcp?label=%40valv%2Fmcp)](https://www.npmjs.com/package/@valv/mcp) [![license](https://img.shields.io/npm/l/@valv/core)](./LICENSE)
 
-valv gives an agent structured tools to **read** your database — and, opt-in, to **write** to it. The model emits a **structured query** (or insert/update/delete) — never SQL — and valv validates it against your schema, scopes it to the current user with policies you write in code, compiles it to your database's SQL, and runs it.
+valv gives an agent structured tools to **read** your database — and, opt-in, to **write** to it. The model emits a **structured query** (or insert/update/delete) — never a native database command — and valv validates it against your schema, scopes it to the current user with policies you write in code, compiles it for your database, and runs it.
 
-The model's query is treated as fully untrusted. It can't read a column you hid, a row the user isn't allowed to see, call a function you didn't allow, write a column you didn't permit, or escape its tenant on a write — not because the prompt asks nicely, but because the query is rebuilt and re-checked on the server before a single byte of SQL is generated.
+The model's query is treated as fully untrusted. It can't read a column you hid, a row the user isn't allowed to see, call a function you didn't allow, write a column you didn't permit, or escape its tenant on a write. Valv rebuilds and checks the query on the server before it reaches the database adapter.
 
 ```ts
 const valv = await createValv(client, { schema: "introspect", defaultPolicy: "deny-all" })
@@ -36,6 +36,8 @@ Install an adapter for your database (it pulls in `@valv/core`):
 npm i @valv/clickhouse @clickhouse/client     # ClickHouse
 # or
 npm i @valv/prisma @prisma/client             # Postgres / MySQL / SQLite
+# or
+npm i @valv/mongodb mongodb                    # MongoDB
 ```
 
 Wire it up — connect, write a policy, hand the tools to an agent:
@@ -119,6 +121,10 @@ const valv = await createValv(clickhouseClient, { schema: "introspect", database
 // Prisma (Postgres / MySQL / SQLite / Cockroach) — schema comes from your .prisma file
 import { createValv } from "@valv/prisma"
 const valv = await createValv(prismaClient)
+
+// MongoDB — merge collection validators with sampled document fields
+import { createValv } from "@valv/mongodb"
+const valv = await createValv(mongoClient.db("analytics"), { schema: "introspect" })
 ```
 
 `defaultPolicy: "deny-all"` (recommended) makes a resource invisible until you write a policy for it.
@@ -144,7 +150,12 @@ valv.policy("users", (ctx) => ({
 | `true` / `false` | allow / deny outright |
 | `{ field: value }` | a row filter, AND-ed into the query server-side |
 
-The row filter can't be widened or overridden by the model — it's injected *after* the model's query is parsed, into the `WHERE` clause, before SQL is emitted. Fields are denied two ways: `fields.deny` (a blacklist) or `fields.allow` (a whitelist). Denied and unknown columns fail with the same message, so the model can't probe for hidden columns. Use `"*"` as the resource name for a default policy.
+The model can't widen or override the row filter. Valv injects it after parsing
+the model's query and before handing the query to the database adapter. Fields
+are denied two ways: `fields.deny` (a blacklist) or `fields.allow` (a
+whitelist). Denied and unknown columns fail with the same message, so the model
+can't probe for hidden columns. Use `"*"` as the resource name for a default
+policy.
 
 The same policy object carries the write axes — `create`, `update`, `delete` (and `write` as a shorthand for create+update) — which default to denied. See [Writes](#writes).
 
@@ -227,7 +238,9 @@ await valv.update({ from: "orders", data: { status: "shipped" }, where: { /* …
 - **`create`** force-injects the policy's owned fields (`tenant_id`) onto the row — the model can't choose, omit, or override them.
 - **`update`/`delete`** AND the policy predicate into your `where`, which is **required** (no implicit "all rows"). The model can only touch rows within its scope.
 - The columns a write sets are checked against a **writable** allowlist (separate from readable); scope columns, sensitive fields, and `readOnly` fields aren't writable. A `where` can only filter by columns the caller can read.
-- **Databases:** all three on Prisma (Postgres/MySQL/SQLite/Cockroach); ClickHouse supports `create` (insert) only.
+- **Databases:** Prisma supports all three operations for PostgreSQL, MySQL,
+  SQLite, and CockroachDB. ClickHouse supports `create` only. MongoDB is
+  read-only.
 
 ### Saved queries & dashboards
 
@@ -256,7 +269,7 @@ LLM ──emits──▶  query (structured JSON, untrusted)
               inject        AND the tenant/row filter into WHERE
                   │
                   ▼
-              emit          compile to your dialect's SQL, with bound parameters
+              compile       produce SQL or a native database query
                   │
                   ▼
               execute  ──▶  your database  ──▶  serialized rows
@@ -280,7 +293,12 @@ GROUP BY `status`
 -- params: p0 = "acme"
 ```
 
-The model never wrote the `WHERE` clause, and it can't remove it. If it had selected a denied column (`internal_notes`), referenced an unknown function, or hidden a sensitive column inside a `sumIf` predicate, validation would have rejected the whole query *before* any SQL existed. Values become bound parameters, never string-concatenated. That's the "by construction" part: safety doesn't depend on the model behaving.
+The model never wrote the `WHERE` clause, and it can't remove it. If it had
+selected a denied column (`internal_notes`), referenced an unknown function, or
+hidden a sensitive column inside a `sumIf` predicate, validation would have
+rejected the query before the adapter compiled it. SQL adapters bind values as
+parameters instead of concatenating strings. MongoDB emits typed aggregation
+pipeline values. Safety doesn't depend on the model behaving.
 
 ---
 
@@ -310,7 +328,7 @@ Or wire it by hand in your `.mcp.json` — point it at a connection string:
 }
 ```
 
-It introspects the live schema, serves the four tools **read-only by default**, and works with any Prisma-supported database **or ClickHouse** (use an `http://host:8123` URL + `VALV_DATABASE`). Narrow access with `VALV_TABLES` / `VALV_EXCLUDE`, or take full control with a `VALV_POLICY_FILE`.
+It introspects the live schema, serves the four tools **read-only by default**, and works with Prisma-supported SQL databases, ClickHouse, and MongoDB. Narrow access with `VALV_TABLES` / `VALV_EXCLUDE`, or take full control with a `VALV_POLICY_FILE`.
 
 ### In your app
 
@@ -340,15 +358,22 @@ It also **learns your database as you use it**. The first time it describes a ta
 | Package | Database | Install |
 |---|---|---|
 | [`@valv/clickhouse`](packages/clickhouse) | ClickHouse | `npm i @valv/clickhouse @clickhouse/client` |
+| [`@valv/mongodb`](packages/mongodb) | MongoDB | `npm i @valv/mongodb mongodb` |
 | [`@valv/prisma`](packages/prisma) | PostgreSQL, MySQL, SQLite, CockroachDB | `npm i @valv/prisma @prisma/client` |
 
-Everything above the adapter (the query grammar, validation, policy injection, the tool layer) lives in `@valv/core` and is database-agnostic. A new adapter is `introspect()` (produce a schema), a small `Dialect` (how to quote identifiers and bind parameters), and `execute()` — the SQL emitter is shared, so you don't write a compiler.
+Everything above the adapter (the query grammar, validation, policy injection, and the tool layer) lives in `@valv/core` and is database-agnostic. Each adapter introspects its database and runs the validated, policy-injected query. SQL adapters share one emitter; the MongoDB adapter compiles the same query into an aggregation pipeline.
 
 ## Examples
 
-- [`examples/hand-schema`](examples/hand-schema) — offline, no database: a hand-defined schema, queries, and `resultSchema`. The fastest way to see the pipeline.
-- [`examples/clickhouse-analytics`](examples/clickhouse-analytics) — an agent answering analytics questions over ClickHouse.
-- [`examples/ecommerce`](examples/ecommerce) — an agent over Postgres (Prisma), plus a [saved-query dashboard](examples/ecommerce/live-dashboard.ts).
+- [`examples/hand-schema`](examples/hand-schema) — offline, no database: a
+  hand-defined schema, queries, and `resultSchema`. The fastest way to see the
+  pipeline.
+- [`examples/mongodb`](examples/mongodb) — MongoDB introspection, tenant policy,
+  field allowlisting, and a grouped aggregation.
+- [`examples/clickhouse-analytics`](examples/clickhouse-analytics) — an agent
+  answering analytics questions over ClickHouse.
+- [`examples/ecommerce`](examples/ecommerce) — an agent over Postgres (Prisma),
+  plus a [saved-query dashboard](examples/ecommerce/live-dashboard.ts).
 
 ## License
 

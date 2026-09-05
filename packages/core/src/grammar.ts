@@ -111,7 +111,16 @@ const AND = "AND"
 const OR = "OR"
 const NOT = "NOT"
 
-const QUERY_KEYS = new Set(["from", "where", "select", "groupBy", "orderBy", "take", "limit", "skip"])
+const QUERY_KEYS = new Set([
+  "from",
+  "where",
+  "select",
+  "groupBy",
+  "orderBy",
+  "take",
+  "limit",
+  "skip",
+])
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v)

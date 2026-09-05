@@ -1,6 +1,6 @@
 {
   "name": "@valv/postgres",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Postgres adapter for valv — row-level security and access control for AI agents, over a runtime connection",
   "keywords": [
     "postgres",

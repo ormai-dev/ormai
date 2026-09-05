@@ -100,10 +100,8 @@ function pgValv(policy: (c: DefaultContext) => Record<string, unknown>) {
     async introspect() {
       return schema
     },
-    compile(q: Query, cat) {
-      return emit(q, cat, pgDialect)
-    },
-    async execute() {
+    async run(q: Query, cat) {
+      emit(q, cat, pgDialect)
       return []
     },
     functions() {

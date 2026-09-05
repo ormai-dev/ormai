@@ -28,6 +28,15 @@ function serialize(value: unknown, depth: number): unknown {
 
   if (typeof value === "object") {
     const v = value as Record<string, unknown>
+    if (v._bsontype === "ObjectId" && typeof v.toHexString === "function") {
+      return (v.toHexString as () => string)()
+    }
+    if (
+      (v._bsontype === "Decimal128" || v._bsontype === "Long") &&
+      typeof v.toString === "function"
+    ) {
+      return (v.toString as () => string)()
+    }
     // Duck-type Decimal.js — constructor name is minified in Prisma's build, but
     // the public method names are preserved, so this check stays reliable.
     if (typeof v.toNumber === "function" && typeof v.toFixed === "function") {

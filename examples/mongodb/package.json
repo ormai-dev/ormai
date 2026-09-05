@@ -1,0 +1,24 @@
+{
+  "name": "valv-mongodb-example",
+  "version": "0.0.1",
+  "private": true,
+  "description": "MongoDB policy and aggregation example for valv",
+  "scripts": {
+    "start": "tsx index.ts",
+    "db:start": "docker start valv-mongodb 2>/dev/null || docker run -d --name valv-mongodb -p 27017:27017 mongo:8.2",
+    "db:stop": "docker stop valv-mongodb",
+    "db:reset": "docker stop valv-mongodb && docker rm valv-mongodb && npm run db:start",
+    "db:seed": "tsx seed.ts"
+  },
+  "dependencies": {
+    "@valv/core": "*",
+    "@valv/mongodb": "*",
+    "dotenv": "^16.0.0",
+    "mongodb": "^7.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}

@@ -52,6 +52,14 @@ export class ClickHouseAdapter implements ValvAdapter {
     return emit(query, catalog, clickhouseDialect, { database: this.options.database })
   }
 
+  async run(query: Query, catalog: SchemaMap): Promise<unknown[]> {
+    const compiled = this.compile(query, catalog)
+    return this.execute(
+      compiled.sql,
+      compiled.params.map((param) => param.value),
+    )
+  }
+
   functions(): Record<string, FnDef> {
     return { ...BASE_FUNCTIONS, ...clickhouseDialect.functions }
   }

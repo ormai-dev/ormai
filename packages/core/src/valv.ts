@@ -12,7 +12,13 @@ import {
 import { buildQuerySchema, mutationSchema as buildMutationSchema } from "./tools/query-schema"
 import { assertWithinLimits } from "./limits"
 import { evaluateRead, evaluateWrite, type WriteOp, type EvaluatedPolicy } from "./evaluate"
-import { validateQuery, validateMutation, type ScopedTable } from "./validate"
+import {
+  validateForcedPolicyValues,
+  validatePolicyPredicate,
+  validateQuery,
+  validateMutation,
+  type ScopedTable,
+} from "./validate"
 import { injectPolicy, injectMutation, type PolicyScope } from "./inject"
 import { resolveJoins, assertJoinLimits, ROOT_ALIAS } from "./joins"
 import type { MutationResult } from "./adapter"
@@ -105,6 +111,7 @@ export class Valv<TContext = DefaultContext, TResources extends string = string>
 
   /** Register an access policy for a resource. Use "*" as a wildcard fallback. */
   policy(resource: TResources | "*", fn: PolicyFn<TContext>): this {
+    if (this.schemaCache) this.validatePolicyKey(resource, this.schemaCache)
     this.policies[resource] = fn
     return this
   }
@@ -112,9 +119,10 @@ export class Valv<TContext = DefaultContext, TResources extends string = string>
   /**
    * Run a query and return its serialized rows. The query is structurally
    * validated, semantically checked against the catalog + policy, policy-
-   * injected, emitted to SQL, and executed. This is the single read primitive:
-   * the query tool's handler calls it, and replaying a stored query is the same
-   * call — so a saved query can never outrank or drift from a fresh one.
+   * injected, and handed to the database adapter. This is the single read
+   * primitive: the query tool's handler calls it, and replaying a stored query
+   * is the same call, so a saved query can never outrank or drift from a fresh
+   * one.
    */
   async run(query: unknown, ctx: TContext): Promise<unknown> {
     const start = Date.now()
@@ -202,6 +210,9 @@ export class Valv<TContext = DefaultContext, TResources extends string = string>
       throw new PolicyViolationError(`${op} access to "${mutation.from}" is denied.`)
     // The read policy governs which columns a WHERE may filter on.
     const read = evaluateRead(policy, ctx, resource, this.defaultPolicy)
+
+    validatePolicyPredicate(write.predicate, resource)
+    validateForcedPolicyValues(write.forced, resource)
 
     validateMutation(op, mutation, resource, write, read)
     const injected = injectMutation(op, mutation, write)
@@ -387,6 +398,7 @@ export class Valv<TContext = DefaultContext, TResources extends string = string>
     const rootEval = evaluateRead(policyFor(query.from), ctx, rootResource, this.defaultPolicy)
     if (!rootEval.allowed)
       throw new PolicyViolationError(`Read access to "${query.from}" is denied.`)
+    validatePolicyPredicate(rootEval.predicate, rootResource)
 
     const tables = new Map<string, ScopedTable>([
       [ROOT_ALIAS, { resource: rootResource, allowedFields: new Set(rootEval.allowedFields) }],
@@ -402,6 +414,7 @@ export class Valv<TContext = DefaultContext, TResources extends string = string>
       const ev = evaluateRead(policyFor(node.resource.name), ctx, node.resource, this.defaultPolicy)
       if (!ev.allowed)
         throw new PolicyViolationError(`Read access to "${node.resource.name}" is denied.`)
+      validatePolicyPredicate(ev.predicate, node.resource)
       evalByAlias.set(node.alias, ev)
       tables.set(node.alias, { resource: node.resource, allowedFields: new Set(ev.allowedFields) })
       scopes.push({ rel: node.path, predicate: ev.predicate })
@@ -409,17 +422,16 @@ export class Valv<TContext = DefaultContext, TResources extends string = string>
 
     validateQuery(query, tables, MAX_LIMIT)
     const injected = injectPolicy(query, scopes, DEFAULT_LIMIT, MAX_LIMIT)
-    const compiled = this.adapter.compile(injected, catalog)
-    const rows = await this.adapter.execute(
-      compiled.sql,
-      compiled.params.map((p) => p.value),
-    )
+    const rows = await this.adapter.run(injected, catalog)
     return serializeResult(rows)
   }
 
   /** Introspect the schema once and cache it. */
   async loadSchema(): Promise<SchemaMap> {
-    this.schemaCache ??= await this.adapter.introspect()
+    if (!this.schemaCache) {
+      this.schemaCache = await this.adapter.introspect()
+      this.validatePolicyKeys(this.schemaCache)
+    }
     return this.schemaCache
   }
 
@@ -485,13 +497,17 @@ export class Valv<TContext = DefaultContext, TResources extends string = string>
   }
 
   private validatePolicyKeys(schema: SchemaMap): void {
-    const resourceNames = new Set(Object.keys(schema.resources))
     for (const key of Object.keys(this.policies)) {
-      if (key === "*" || resourceNames.has(key)) continue
-      const msg = `[valv] policy() named unknown resource "${key}". Known: ${[...resourceNames].join(", ")}. Use await valv.describe() to list them.`
-      if (this.strictPolicyKeys) throw new Error(msg)
-      console.warn(msg)
+      this.validatePolicyKey(key, schema)
     }
+  }
+
+  private validatePolicyKey(key: string, schema: SchemaMap): void {
+    if (key === "*" || hasOwn(schema.resources, key)) return
+    const names = Object.keys(schema.resources)
+    const msg = `[valv] policy() named unknown resource "${key}". Known: ${names.join(", ")}. Use await valv.describe() to list them.`
+    if (this.strictPolicyKeys) throw new Error(msg)
+    console.warn(msg)
   }
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "@valv/sqlite",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "SQLite adapter for valv — row-level security and access control for AI agents, over a runtime connection",
   "keywords": [
     "sqlite",

@@ -17,16 +17,15 @@ export interface MutationResult {
 }
 
 /**
- * The database boundary. Core validates and policy-checks the AST, then hands it
- * to the adapter to emit dialect SQL (`compile`) and run it (`execute`). The
- * adapter never sees the policy — security logic stays in core.
+ * The database seam. Core validates and policy-checks the AST, then hands the
+ * resulting query to the adapter. The adapter owns backend-specific compilation
+ * and execution. It never sees policy functions or caller context; security
+ * logic stays in core and reaches the adapter already injected into the query.
  */
 export interface ValvAdapter {
   introspect(): Promise<SchemaMap>
-  /** Emit dialect SQL for a validated, policy-injected query. */
-  compile(query: Query, catalog: SchemaMap): CompiledQuery
-  /** Run a compiled statement. Parameters are positional values. */
-  execute(sql: string, parameters?: unknown[]): Promise<unknown[]>
+  /** Run a validated, policy-injected query against the backend. */
+  run(query: Query, catalog: SchemaMap): Promise<unknown[]>
   /** The functions callable in this dialect (base ∪ dialect), for output-shape
    *  prediction and tool discovery. */
   functions(): Record<string, FnDef>

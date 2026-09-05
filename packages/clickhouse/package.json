@@ -1,6 +1,6 @@
 {
   "name": "@valv/clickhouse",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "description": "ClickHouse adapter for valv — row-level security and access control for AI agents",
   "keywords": [
     "clickhouse",

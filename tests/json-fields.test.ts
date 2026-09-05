@@ -87,11 +87,8 @@ async function valvFor(dialect: Dialect) {
     async introspect() {
       return schema
     },
-    compile(q: Query, cat) {
+    async run(q: Query, cat) {
       last = emit(q, cat, dialect)
-      return last
-    },
-    async execute() {
       return []
     },
     functions() {

@@ -19,7 +19,7 @@ export interface ServerConfig {
   databaseUrl: string
   /** Datasource provider. Inferred from the URL when omitted. */
   provider?: McpProvider
-  /** Database/schema name. Used by ClickHouse (from VALV_DATABASE). */
+  /** Database/schema name. Used by ClickHouse and MongoDB (from VALV_DATABASE). */
   database?: string
   /** Path to a policy module that takes full control of access (optional). */
   policyFile?: string

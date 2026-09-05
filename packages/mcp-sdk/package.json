@@ -1,6 +1,6 @@
 {
   "name": "@valv/mcp-sdk",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Library to turn your app's database into an MCP server for coding agents (Claude Code) — adapter-agnostic, row-level security, zero SQL",
   "keywords": [
     "mcp",
@@ -43,7 +43,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0"
   },
   "peerDependencies": {
-    "@valv/core": "^0.10.0",
+    "@valv/core": ">=0.10.0 <1",
     "express": "^4.0.0 || ^5.0.0"
   },
   "peerDependenciesMeta": {

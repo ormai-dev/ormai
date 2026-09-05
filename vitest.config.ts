@@ -10,6 +10,7 @@ export default defineConfig({
       "@valv/postgres": path.resolve(__dirname, "packages/postgres/src/index.ts"),
       "@valv/mysql": path.resolve(__dirname, "packages/mysql/src/index.ts"),
       "@valv/sqlite": path.resolve(__dirname, "packages/sqlite/src/index.ts"),
+      "@valv/mongodb": path.resolve(__dirname, "packages/mongodb/src/index.ts"),
     },
   },
 })

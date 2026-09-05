@@ -1,7 +1,7 @@
 import type { Query, Expr, Insert, Update, Delete } from "./ast"
 import type { ResourceSchema } from "./catalog"
 import type { EvaluatedPolicy, EvaluatedWrite, WriteOp } from "./evaluate"
-import { ValidationError } from "./errors"
+import { PolicyViolationError, ValidationError } from "./errors"
 import { ROOT_ALIAS, aliasForPath } from "./joins"
 
 // One table in scope for a query: the resource and the fields this caller may
@@ -10,6 +10,33 @@ import { ROOT_ALIAS, aliasForPath } from "./joins"
 export interface ScopedTable {
   resource: ResourceSchema
   allowedFields: Set<string>
+}
+
+// Policies may scope on fields hidden from the model, so they cannot go through
+// validateQuery's caller-facing allowlist. They still need catalog validation:
+// a misspelled scope must fail closed before any backend interprets it.
+export function validatePolicyPredicate(
+  predicate: Expr | undefined,
+  resource: ResourceSchema,
+): void {
+  if (!predicate) return
+  walkColumns(predicate, (rel, name) => {
+    if (rel?.length || !hasOwn(resource.fields, name)) {
+      throw new PolicyViolationError(`Policy references unknown field "${name}".`)
+    }
+  })
+}
+
+export function validateForcedPolicyValues(
+  forced: Record<string, unknown> | undefined,
+  resource: ResourceSchema,
+): void {
+  if (!forced) return
+  for (const name of Object.keys(forced)) {
+    if (!hasOwn(resource.fields, name)) {
+      throw new PolicyViolationError(`Policy references unknown field "${name}".`)
+    }
+  }
 }
 
 // The semantic gate. Structural validity is already guaranteed by the AST

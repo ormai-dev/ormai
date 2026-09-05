@@ -3,7 +3,7 @@ import type { Valv } from "@valv/core"
 import { createValv, prepareDatabase } from "@valv/prisma"
 import { startStdioServer, startHttpServer } from "@valv/mcp-sdk"
 import { applyAccess } from "./policy"
-import type { ServerConfig } from "./config"
+import { inferProvider, type ServerConfig } from "./config"
 
 // Policy context is arbitrary JSON (VALV_CONTEXT). The default read-only policy
 // ignores it; a policy file may read whatever shape the user passes.
@@ -19,11 +19,13 @@ export interface RunningServer {
 }
 
 // Build a valv instance + a cleanup fn for the configured database. ClickHouse
-// connects over its HTTP client; everything else introspects via Prisma.
+// and MongoDB use their native adapters; SQL databases introspect via Prisma.
 async function buildValv(
   config: ServerConfig,
 ): Promise<{ valv: DbValv; stop: () => Promise<void> }> {
-  if (config.provider === "clickhouse") {
+  const provider = config.provider ?? inferProvider(config.databaseUrl)
+
+  if (provider === "clickhouse") {
     const { createValvFromUrl } = await import("@valv/clickhouse")
     const { valv, stop } = await createValvFromUrl<Ctx>(toClickHouseUrl(config.databaseUrl), {
       database: config.database,
@@ -32,7 +34,15 @@ async function buildValv(
     return { valv, stop }
   }
 
-  const prepared = await prepareDatabase(config.databaseUrl, config.provider ?? "postgresql")
+  if (provider === "mongodb") {
+    const { createValvFromUrl } = await import("@valv/mongodb")
+    return createValvFromUrl<Ctx>(config.databaseUrl, {
+      database: config.database,
+      defaultPolicy: "deny-all",
+    })
+  }
+
+  const prepared = await prepareDatabase(config.databaseUrl, provider)
   const valv = (await createValv<PrismaClient, Ctx>(prepared.prisma, {
     schemaPath: prepared.schemaPath,
     defaultPolicy: "deny-all",

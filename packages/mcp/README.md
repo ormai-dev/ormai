@@ -4,7 +4,7 @@
 
 A zero-config [MCP](https://modelcontextprotocol.io) server built on [valv](../../README.md). Give it a connection string and it introspects your live schema, serves four tools (`list_resources`, `search_resources`, `describe_resource`, `query`) **read-only by default**, and enforces your policies — no SQL ever reaches the model, and it can only read what you allow.
 
-Works with any **Prisma**-supported database (PostgreSQL, MySQL, SQLite, CockroachDB) **and ClickHouse**.
+Works with PostgreSQL, MySQL, SQLite, CockroachDB, ClickHouse, and MongoDB.
 
 [![npm](https://img.shields.io/npm/v/@valv/mcp)](https://www.npmjs.com/package/@valv/mcp) [![license](https://img.shields.io/npm/l/@valv/mcp)](../../LICENSE)
 
@@ -40,6 +40,13 @@ For **ClickHouse**, use its HTTP URL and a database name:
 "env": { "DATABASE_URL": "http://localhost:8123", "VALV_DATABASE": "analytics" }
 ```
 
+For **MongoDB**, use a standard connection string. Set `VALV_DATABASE` when the
+URL does not select a database:
+
+```json
+"env": { "DATABASE_URL": "mongodb://localhost:27017", "VALV_DATABASE": "analytics" }
+```
+
 ## Configuration
 
 All via environment variables:
@@ -47,8 +54,8 @@ All via environment variables:
 | Variable | Description |
 |---|---|
 | `DATABASE_URL` | Connection string (required; or pass as the first CLI arg). |
-| `VALV_PROVIDER` | `postgresql` \| `mysql` \| `sqlite` \| `clickhouse`. Inferred from the URL when omitted. |
-| `VALV_DATABASE` | Database name (ClickHouse). |
+| `VALV_PROVIDER` | `postgresql` \| `mysql` \| `sqlite` \| `mongodb` \| `clickhouse`. Inferred from the URL when omitted. |
+| `VALV_DATABASE` | Database name for ClickHouse or MongoDB. |
 | `VALV_TABLES` | Comma-separated allow-list — only these tables are exposed. |
 | `VALV_EXCLUDE` | Comma-separated deny-list, applied after the allow-list. |
 | `VALV_POLICY_FILE` | Path to a policy module (below) for tenant scoping / hidden fields. |

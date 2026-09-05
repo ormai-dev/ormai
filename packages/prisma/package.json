@@ -1,6 +1,6 @@
 {
   "name": "@valv/prisma",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "Prisma adapter for valv — row-level security and access control for AI agents",
   "keywords": [
     "prisma",
@@ -44,7 +44,7 @@
   },
   "peerDependencies": {
     "@prisma/client": "^5.0.0",
-    "@valv/core": "^0.10.0",
+    "@valv/core": ">=0.10.0 <1",
     "pg": "^8.0.0",
     "prisma": "^5.0.0"
   },

@@ -1,25 +1,23 @@
 {
-  "name": "@valv/mysql",
-  "version": "0.3.3",
-  "description": "MySQL adapter for valv — row-level security and access control for AI agents, over a runtime connection",
+  "name": "@valv/mongodb",
+  "version": "0.1.0",
+  "description": "MongoDB adapter for valv",
   "keywords": [
-    "mysql",
-    "mariadb",
+    "mongodb",
     "ai agent",
     "llm",
     "access control",
     "authorization",
-    "row-level security",
     "multi-tenant",
     "tool use",
-    "function calling",
     "typescript"
   ],
+  "author": "Nicolò D'Addabbo <nicolodaddabbo@gmail.com> (https://nicolod.com)",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/valv-dev/valv.git",
-    "directory": "packages/mysql"
+    "directory": "packages/mongodb"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -37,8 +35,8 @@
     "build": "tsc"
   },
   "peerDependencies": {
-    "@valv/core": ">=0.10.0 <1",
-    "mysql2": "^3.0.0"
+    "@valv/core": ">=0.14.0 <1",
+    "mongodb": "^6.0.0 || ^7.0.0"
   },
   "publishConfig": {
     "access": "public"

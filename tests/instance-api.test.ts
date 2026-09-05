@@ -58,6 +58,22 @@ describe("functions getter", () => {
   })
 })
 
+describe("strict policy keys", () => {
+  it("does not retain a rejected policy registration", async () => {
+    const client = fakeClient([])
+    const valv = await createValv<DefaultContext>(client, {
+      schema,
+      defaultPolicy: "allow-all",
+      strictPolicyKeys: true,
+    })
+
+    expect(() => valv.policy("event" as "events", () => ({ read: false }))).toThrow(
+      /unknown resource "event"/,
+    )
+    await expect(valv.run({ from: "events", select: { plan: true } }, ctx)).resolves.toEqual([])
+  })
+})
+
 describe("parseQuery() / parse writes", () => {
   it("parses the grammar into the internal query", async () => {
     const { valv } = await setup()

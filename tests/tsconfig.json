@@ -13,7 +13,8 @@
       "@valv/clickhouse": ["../packages/clickhouse/src/index.ts"],
       "@valv/postgres": ["../packages/postgres/src/index.ts"],
       "@valv/mysql": ["../packages/mysql/src/index.ts"],
-      "@valv/sqlite": ["../packages/sqlite/src/index.ts"]
+      "@valv/sqlite": ["../packages/sqlite/src/index.ts"],
+      "@valv/mongodb": ["../packages/mongodb/src/index.ts"]
     }
   },
   "include": ["**/*.ts"]

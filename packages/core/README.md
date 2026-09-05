@@ -1,10 +1,10 @@
 # @valv/core
 
-The database-agnostic core of [valv](../../README.md): the query grammar an LLM emits, the validator that checks it against your schema and policy, the policy injector, the shared SQL emitter, and the tool layer.
+The database-agnostic core of [valv](../../README.md): the query grammar an LLM emits, the validator that checks it against your schema and policy, the policy injector, the shared SQL emitter, and the tool layer. Adapters receive a validated, policy-injected query and decide how to compile and execute it.
 
 [![npm](https://img.shields.io/npm/v/@valv/core)](https://www.npmjs.com/package/@valv/core) [![license](https://img.shields.io/npm/l/@valv/core)](../../LICENSE)
 
-> **Most users install an adapter, not this package directly** — [`@valv/clickhouse`](../clickhouse) or [`@valv/prisma`](../prisma) wrap core with introspection and a dialect. See the [root README](../../README.md) for the full guide. Reach for `@valv/core` directly only to build a custom adapter.
+> **Most users install an adapter, not this package directly** — [`@valv/clickhouse`](../clickhouse), [`@valv/mongodb`](../mongodb), or [`@valv/prisma`](../prisma) wrap core with introspection and database execution. See the [root README](../../README.md) for the full guide. Reach for `@valv/core` directly only to build a custom adapter.
 
 ## What this package exports
 
@@ -22,10 +22,10 @@ The database-agnostic core of [valv](../../README.md): the query grammar an LLM 
 
 ## Building an adapter
 
-Everything above the database is shared, so a new adapter is three methods plus a small dialect. The shared `emit` does clause assembly, parenthesisation, and parameter ordering — your dialect only says how to quote identifiers and render placeholders.
+Everything above database execution is shared. An adapter introspects the database, advertises its functions, and runs a validated, policy-injected query. SQL adapters can use the shared `emit` function and a small `Dialect`; non-SQL adapters can compile the query into their native command format.
 
 ```ts
-import type { ValvAdapter, SchemaMap, Query, CompiledQuery, FnDef, Dialect } from "@valv/core"
+import type { ValvAdapter, SchemaMap, Query, FnDef, Dialect } from "@valv/core"
 import { emit, BASE_FUNCTIONS } from "@valv/core"
 
 const myDialect: Dialect = {
@@ -38,11 +38,10 @@ class MyAdapter implements ValvAdapter {
   async introspect(): Promise<SchemaMap> {
     // describe your tables → resources, fields (with coarse `type` + `nativeType`), relations
   }
-  compile(query: Query, catalog: SchemaMap): CompiledQuery {
-    return emit(query, catalog, myDialect)
-  }
-  async execute(sql: string, params?: unknown[]): Promise<unknown[]> {
-    // run the parameterized statement, return rows
+  async run(query: Query, catalog: SchemaMap): Promise<unknown[]> {
+    const compiled = emit(query, catalog, myDialect)
+    // Run compiled.sql with compiled.params and return rows.
+    return database.query(compiled.sql, compiled.params.map((param) => param.value))
   }
   functions(): Record<string, FnDef> {
     return { ...BASE_FUNCTIONS, ...myDialect.functions }
@@ -53,7 +52,7 @@ class MyAdapter implements ValvAdapter {
 }
 ```
 
-Validation and policy injection never reach the adapter — security stays in core. A `Dialect` can also declare extra functions (`FnDef`: argument signature, return type, render), which become callable in the query grammar and are surfaced to the model through the `query` tool's enum. Writes are optional: implement `mutate` (the mutation arrives already validated and policy-injected) to opt in, or omit it for a read-only adapter.
+Policy functions and caller context never reach the adapter. Core evaluates them, validates the query, and injects their predicates before calling `run`. A `Dialect` can also declare extra functions (`FnDef`: argument signature, return type, render), which become callable in the query grammar and are surfaced to the model through the `query` tool's enum. Writes are optional: implement `mutate` (the mutation arrives already validated and policy-injected) to opt in, or omit it for a read-only adapter.
 
 ## Type-safe resource names
 

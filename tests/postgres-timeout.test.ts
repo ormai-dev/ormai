@@ -21,14 +21,18 @@ function throwingSql(err: unknown): PostgresSql {
 describe("postgres adapter: statement timeout", () => {
   it("translates SQLSTATE 57014 into an actionable ValidationError", async () => {
     const adapter = new PostgresAdapter(
-      throwingSql(Object.assign(new Error("canceling statement due to statement timeout"), { code: "57014" })),
+      throwingSql(
+        Object.assign(new Error("canceling statement due to statement timeout"), { code: "57014" }),
+      ),
     )
     await expect(adapter.execute("select 1")).rejects.toBeInstanceOf(ValidationError)
     await expect(adapter.execute("select 1")).rejects.toThrow(/timed out/i)
   })
 
   it("matches on the message when the driver omits the code", async () => {
-    const adapter = new PostgresAdapter(throwingSql(new Error("ERROR: canceling statement due to statement timeout")))
+    const adapter = new PostgresAdapter(
+      throwingSql(new Error("ERROR: canceling statement due to statement timeout")),
+    )
     await expect(adapter.execute("select 1")).rejects.toThrow(/timed out/i)
   })
 

@@ -98,12 +98,13 @@ const PROVIDER_OPTIONS = [
   { value: "mysql" as const, label: "MySQL" },
   { value: "sqlite" as const, label: "SQLite" },
   { value: "clickhouse" as const, label: "ClickHouse" },
+  { value: "mongodb" as const, label: "MongoDB" },
 ]
 
 interface Connection {
   url: string
   provider: McpProvider
-  /** ClickHouse database name (passed via VALV_DATABASE, not the URL). */
+  /** Optional database override passed through VALV_DATABASE. */
   database?: string
 }
 
@@ -145,8 +146,11 @@ async function collectFromString(p: Clack): Promise<Connection | null> {
   if (p.isCancel(provider)) return null
 
   let database: string | undefined
-  if (provider === "clickhouse") {
-    const db = await p.text({ message: "ClickHouse database name", initialValue: "default" })
+  if (provider === "clickhouse" || provider === "mongodb") {
+    const db = await p.text({
+      message: `${provider === "clickhouse" ? "ClickHouse" : "MongoDB"} database name`,
+      initialValue: provider === "clickhouse" ? "default" : "",
+    })
     if (p.isCancel(db)) return null
     database = db.trim() || undefined
   }
@@ -157,6 +161,7 @@ const DEFAULT_PORT: Partial<Record<McpProvider, number>> = {
   postgresql: 5432,
   mysql: 3306,
   clickhouse: 8123,
+  mongodb: 27017,
 }
 const DEFAULT_USER: Partial<Record<McpProvider, string>> = {
   postgresql: "postgres",
@@ -243,6 +248,10 @@ function buildConnectionString(provider: McpProvider, parts: ConnectionParts): s
   if (provider === "clickhouse") {
     // ClickHouse speaks HTTP; the database is carried separately via VALV_DATABASE.
     return `http://${auth}${parts.host}${portPart}`
+  }
+  if (provider === "mongodb") {
+    const dbPart = parts.database ? `/${encodeURIComponent(parts.database)}` : ""
+    return `mongodb://${auth}${parts.host}${portPart}${dbPart}`
   }
   const scheme = provider === "mysql" ? "mysql" : "postgresql"
   const dbPart = parts.database ? `/${encodeURIComponent(parts.database)}` : ""
